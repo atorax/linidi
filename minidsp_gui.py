@@ -706,6 +706,7 @@ class MainWindow(QMainWindow):
         self.project_path = Path(opts.project).expanduser()
         self.dirty = False
         self.have_read = False
+        self._topology_dsp: int | None = None
 
         self.setWindowTitle("minidsp-gui")
         self.resize(1220, 840)
@@ -729,6 +730,14 @@ class MainWindow(QMainWindow):
             "This only reads; nothing is written.")
         self.read_btn.clicked.connect(self.on_read)
         bar.addWidget(self.read_btn)
+
+        self.xml_btn = QPushButton("Import Device Console XML...")
+        self.xml_btn.setToolTip(
+            "Load a preset exported from miniDSP Device Console.\n"
+            "This is the only source of bypass state -- hardware readback\n"
+            "cannot tell an active filter from a bypassed one.")
+        self.xml_btn.clicked.connect(self.on_import_xml)
+        bar.addWidget(self.xml_btn)
 
         self.rew_btn = QPushButton("Import REW...")
         self.rew_btn.clicked.connect(self.on_rew)
@@ -816,6 +825,7 @@ class MainWindow(QMainWindow):
         info = devices[min(self.opts.device, len(devices) - 1)]
         name = info.get("product_name", "unknown")
         ver = info.get("version", {})
+        self._topology_dsp = ver.get("dsp_version")
         status = self.daemon.status()
         n_in = len(status.get("input_levels", []))
         n_out = len(status.get("output_levels", []))
@@ -1005,6 +1015,59 @@ class MainWindow(QMainWindow):
         self.apply_btn.setEnabled(True)
         self.statusBar().showMessage(f"Apply failed: {msg}", 8000)
         QMessageBox.warning(self, "Apply failed", msg)
+
+    def on_import_xml(self):
+        """Load a Device Console preset export.
+
+        Readback recovers coefficients but not bypass state, because bypass is
+        set by command 0x19 and has no readable address. An export carries it,
+        so importing one is the only way to know which filters are really in
+        circuit -- which is why this counts as having read the device.
+        """
+        if self.amap is None:
+            QMessageBox.warning(
+                self, "No address map",
+                "Importing needs an address map for this device.\n"
+                "Generate one with tools/gen_address_map.py.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Device Console preset", str(Path.home()),
+            "Device Console export (*.xml);;All files (*)")
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+            parsed = core.parse_device_console_xml(text)
+        except OSError as exc:
+            QMessageBox.warning(self, "Import failed", str(exc))
+            return
+        if not parsed["filters"]:
+            QMessageBox.warning(
+                self, "Nothing imported",
+                "No <filter> elements found. Is that a Device Console export?")
+            return
+
+        dsp = parsed.get("dsp_version")
+        mine = self._topology_dsp
+        if dsp is not None and mine is not None and dsp != mine:
+            resp = QMessageBox.warning(
+                self, "Different DSP version",
+                f"That export is for dsp_version {dsp}, but this device "
+                f"reports {mine}.\n\nAddresses may not line up. Import anyway?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if resp != QMessageBox.Yes:
+                return
+
+        stats = core.apply_device_console_xml(self.project, parsed, self.amap)
+        self.have_read = True
+        self.dirty = True
+        self.refresh_list()
+        self.on_select(self.chan_list.currentRow())
+        self.update_warning()
+        self.statusBar().showMessage(
+            f"Imported {stats['crossover']} crossover groups and "
+            f"{stats['peq']} PEQ bands across {stats['outputs']} outputs "
+            f"({stats['bypassed']} bypassed)", 10000)
 
     def on_rew(self):
         chan, _ = self.current_channel()

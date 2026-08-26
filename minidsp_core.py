@@ -674,3 +674,175 @@ def apply_readback(project: dict[str, Any],
                 dst["enabled"] = True
                 dst["manual"] = band["coeff"]
     return project
+
+
+# ---------------------------------------------------------------------------
+# miniDSP Device Console XML import
+# ---------------------------------------------------------------------------
+#
+# Device Console exports a complete preset as XML: every filter with its
+# coefficients *and* its bypass flag, plus gains, delays, polarity and
+# routing. That bypass flag is the one thing hardware readback cannot recover,
+# because bypass is set by command 0x19 and has no readable address -- so an
+# export is the only way to know which filters are actually in circuit.
+#
+# Filters carry an `addr` attribute matching the addresses in address_maps/,
+# so entries are matched by address rather than by channel naming convention.
+# That keeps the importer device-agnostic.
+
+_XML_FILTER = re.compile(
+    r'<filter\s+name="(?P<name>[^"]+)"\s+addr="(?P<addr>\d+)"\s*>'
+    r'(?P<body>.*?)</filter>', re.S)
+_XML_ITEM = re.compile(
+    r'<item\s+name="(?P<name>[^"]+)"\s+addr="(?P<addr>\d+)"\s*>\s*'
+    r'<dec>(?P<dec>[^<]*)</dec>', re.S)
+
+# Device Console filter type -> (our type, alignment, order) where relevant.
+_XML_PEQ_TYPES = {"PK": "peaking", "SL": "lowshelf", "SH": "highshelf",
+                  "LP": "lowpass", "HP": "highpass", "NO": "notch",
+                  "AP": "allpass", "BP": "bandpass"}
+_XML_XOVER = re.compile(r"^(BW|LR|BE)(LPF|HPF)_(\d+)$")
+_XML_ALIGN = {"BW": "butterworth", "LR": "linkwitz-riley", "BE": "bessel"}
+
+
+def _xml_tag(body: str, tag: str) -> str:
+    m = re.search(rf"<{tag}>(.*?)</{tag}>", body, re.S)
+    return m.group(1).strip() if m else ""
+
+
+def _xml_float(text: str, default: float = 0.0) -> float:
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_device_console_xml(text: str) -> dict[str, Any]:
+    """Parse a Device Console preset export into address-keyed data.
+
+    Returns::
+
+        {"filters": {addr: {...}}, "items": {addr: (name, value)},
+         "dsp_version": int | None}
+    """
+    filters: dict[int, dict[str, Any]] = {}
+    for m in _XML_FILTER.finditer(text):
+        body = m.group("body")
+        raw_type = _xml_tag(body, "type")
+        coeffs = [c for c in _xml_tag(body, "dec").split(",") if c.strip()]
+        entry: dict[str, Any] = {
+            "name": m.group("name"),
+            "type": raw_type,
+            "freq": _xml_float(_xml_tag(body, "freq")),
+            "q": _xml_float(_xml_tag(body, "q"), 0.7071),
+            "gain": _xml_float(_xml_tag(body, "boost")),
+            "bypass": _xml_tag(body, "bypass") == "1",
+        }
+        if len(coeffs) == 5:
+            b0, b1, b2, a1, a2 = (float(c) for c in coeffs)
+            entry["coeff"] = {"b0": b0, "b1": b1, "b2": b2, "a1": a1, "a2": a2}
+        xm = _XML_XOVER.match(raw_type)
+        if xm:
+            entry["alignment"] = _XML_ALIGN.get(xm.group(1), "butterworth")
+            entry["mode"] = "lowpass" if xm.group(2) == "LPF" else "highpass"
+            entry["order"] = int(xm.group(3))
+        filters[int(m.group("addr"))] = entry
+
+    items: dict[int, tuple[str, float]] = {}
+    for m in _XML_ITEM.finditer(text):
+        items[int(m.group("addr"))] = (m.group("name"),
+                                       _xml_float(m.group("dec")))
+
+    ver = re.search(r"<dspversion>(\d+)</dspversion>", text)
+    return {"filters": filters, "items": items,
+            "dsp_version": int(ver.group(1)) if ver else None}
+
+
+def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
+                             amap: "AddressMap") -> dict[str, int]:
+    """Fold a parsed Device Console export into a project.
+
+    Matching is by DSP address, so this does not depend on any particular
+    channel-naming convention.
+    """
+    filters = parsed["filters"]
+    items = parsed["items"]
+    stats = {"outputs": 0, "crossover": 0, "peq": 0, "bypassed": 0}
+
+    for idx, spec in enumerate(amap.outputs):
+        if idx >= len(project["outputs"]):
+            break
+        out = project["outputs"][idx]
+        stats["outputs"] += 1
+
+        if "gain" in spec and spec["gain"] in items:
+            out["gain"] = items[spec["gain"]][1]
+        if "delay" in spec and spec["delay"] in items:
+            out["delay"] = items[spec["delay"]][1]
+        if "invert" in spec and spec["invert"] in items:
+            out["invert"] = bool(items[spec["invert"]][1])
+
+        for gi, base in enumerate(spec.get("xover_groups", [])):
+            if gi >= len(out["crossover"]):
+                break
+            f = filters.get(base)
+            dst = out["crossover"][gi]
+            if not f:
+                continue
+            stats["crossover"] += 1
+            if f["bypass"]:
+                stats["bypassed"] += 1
+            dst["enabled"] = not f["bypass"]
+            dst["manual"] = None
+            if "mode" in f:
+                dst["mode"] = f["mode"]
+                dst["alignment"] = f["alignment"]
+                dst["order"] = f["order"]
+                dst["freq"] = f["freq"]
+
+        for slot, addr in enumerate(spec.get("peq", [])):
+            if slot >= len(out["peq"]):
+                break
+            f = filters.get(addr)
+            if not f:
+                continue
+            dst = out["peq"][slot]
+            stats["peq"] += 1
+            if f["bypass"]:
+                stats["bypassed"] += 1
+            dst["enabled"] = not f["bypass"]
+            dst["manual"] = None
+            kind = _XML_PEQ_TYPES.get(f["type"])
+            if kind:
+                dst["type"] = kind
+                dst["freq"] = f["freq"]
+                dst["q"] = f["q"] or 0.7071
+                dst["gain"] = f["gain"]
+            elif "coeff" in f:
+                dst["manual"] = f["coeff"]
+
+    for idx, spec in enumerate(amap.inputs):
+        if idx >= len(project["inputs"]):
+            break
+        inp = project["inputs"][idx]
+        if "gain" in spec and spec["gain"] in items:
+            inp["gain"] = items[spec["gain"]][1]
+        for slot, addr in enumerate(spec.get("peq", [])):
+            if slot >= len(inp["peq"]):
+                break
+            f = filters.get(addr)
+            if not f:
+                continue
+            dst = inp["peq"][slot]
+            dst["enabled"] = not f["bypass"]
+            dst["manual"] = None
+            kind = _XML_PEQ_TYPES.get(f["type"])
+            if kind:
+                dst["type"] = kind
+                dst["freq"] = f["freq"]
+                dst["q"] = f["q"] or 0.7071
+                dst["gain"] = f["gain"]
+            elif "coeff" in f:
+                dst["manual"] = f["coeff"]
+
+    return stats
