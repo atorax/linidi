@@ -175,22 +175,47 @@ class TaskRunner(QObject):
 # --------------------------------------------------------------------------
 
 class MeterBar(QWidget):
-    """A single horizontal level meter with peak hold."""
+    """A level meter with instant attack, decaying release and peak hold.
+
+    Ballistics matter more than raw poll rate for how a meter *reads*: rising
+    instantly and falling at a fixed dB/second looks smooth even when the
+    underlying samples arrive at a modest rate, whereas an unsmoothed bar
+    flickers no matter how fast you poll.
+    """
+
+    DECAY_DB_PER_SEC = 90.0     # release rate of the bar
+    PEAK_HOLD_SEC = 1.2         # how long the peak tick stays put
 
     def __init__(self, label: str):
         super().__init__()
         self.label = label
-        self.value = -120.0
+        self.value = -120.0         # newest sample
+        self.display = -120.0       # what is actually drawn
         self.peak = -120.0
         self._peak_at = 0.0
+        self._last = time.monotonic()
         self.setMinimumHeight(15)
         self.setMaximumHeight(15)
 
     def set_value(self, db: float):
         self.value = db
         now = time.monotonic()
-        if db > self.peak or now - self._peak_at > 1.5:
+        if db > self.peak or now - self._peak_at > self.PEAK_HOLD_SEC:
             self.peak, self._peak_at = db, now
+        # Driven by the poll for now. If a repaint timer is added later for
+        # smoother release, call animate() from that instead and drop this.
+        self.animate()
+
+    def animate(self):
+        """Advance ballistics one frame."""
+        now = time.monotonic()
+        dt = max(0.0, now - self._last)
+        self._last = now
+        if self.value >= self.display:
+            self.display = self.value                  # instant attack
+        else:
+            self.display = max(self.value,
+                               self.display - self.DECAY_DB_PER_SEC * dt)
         self.update()
 
     def paintEvent(self, _ev):
@@ -211,7 +236,7 @@ class MeterBar(QWidget):
         def frac(db):
             return max(0.0, min(1.0, (db + 60.0) / 60.0))
 
-        fill = int(bar_w * frac(self.value))
+        fill = int(bar_w * frac(self.display))
         if fill > 0:
             col = DANGER if self.value > -3 else WARN if self.value > -12 else OK
             p.fillRect(x0, 4, fill, h - 8, QColor(col))
