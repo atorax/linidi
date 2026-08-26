@@ -962,8 +962,13 @@ class MasterStrip(QFrame):
     def __init__(self):
         super().__init__()
         self._loading = False
+        self.setObjectName("deviceCard")
+        self.setStyleSheet(
+            f"#deviceCard {{ background: {PANEL}; border: 1px solid {LINE};"
+            f" border-radius: 7px; }}")
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setContentsMargins(12, 7, 12, 7)
+        self._lay = lay
 
         self.device_label = QLabel("connecting...")
         self.device_label.setObjectName("muted")
@@ -1006,10 +1011,17 @@ class MasterStrip(QFrame):
         lay.addWidget(self.preset)
 
         lay.addStretch(1)
+        # Placed by the window, so status text can sit ahead of the buttons.
         self.panic_btn = QPushButton("MUTE ALL")
         self.panic_btn.setObjectName("danger")
         self.panic_btn.clicked.connect(self.panic.emit)
-        lay.addWidget(self.panic_btn)
+
+    def add_trailing(self, *widgets, spacing: int = 0):
+        """Append controls to the right-hand end of the card."""
+        if spacing:
+            self._lay.addSpacing(spacing)
+        for wdg in widgets:
+            self._lay.addWidget(wdg)
 
     def _volume_preview(self, v):
         self.volume_label.setText(f"{v / 10.0:.1f} dB")
@@ -1091,7 +1103,7 @@ class MainWindow(QMainWindow):
         self._gains_at_read: dict[int, float] = {}
 
         self.setWindowTitle("minidsp-gui")
-        self.resize(1560, 1020)
+        self.resize(1560, 1044)
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -1101,7 +1113,25 @@ class MainWindow(QMainWindow):
         self.master = MasterStrip()
         self.master.master_changed.connect(self.on_master_change)
         self.master.panic.connect(self.on_panic)
-        root.addWidget(self.master)
+
+        self.warn_label = QLabel("")
+        self.warn_label.setObjectName("muted")
+        # Apply writes to the hardware; keep it at the far end of the card,
+        # away from anything pressed routinely.
+        self.apply_btn = QPushButton("Apply to device")
+        self.apply_btn.setObjectName("primary")
+        self.apply_btn.setToolTip(
+            "Write this project to the hardware, overwriting what is loaded.")
+        self.apply_btn.clicked.connect(self.on_apply)
+        self.master.add_trailing(self.warn_label, spacing=18)
+        self.master.add_trailing(self.master.panic_btn, spacing=14)
+        self.master.add_trailing(self.apply_btn, spacing=8)
+
+        card_wrap = QWidget()
+        cw = QHBoxLayout(card_wrap)
+        cw.setContentsMargins(10, 8, 10, 4)
+        cw.addWidget(self.master)
+        root.addWidget(card_wrap)
 
         bar = QHBoxLayout()
         bar.setContentsMargins(10, 6, 10, 6)
@@ -1130,25 +1160,6 @@ class MainWindow(QMainWindow):
             b = QPushButton(text); b.clicked.connect(slot); bar.addWidget(b)
 
         bar.addStretch(1)
-        self.warn_label = QLabel("")
-        self.warn_label.setObjectName("muted")
-        bar.addWidget(self.warn_label)
-
-        # Apply writes to the hardware. Keep it well away from everything
-        # else so it cannot be hit by accident while tuning.
-        bar.addSpacing(28)
-        sep = QFrame()
-        sep.setFrameShape(QFrame.VLine)
-        sep.setStyleSheet(f"color: {LINE};")
-        bar.addWidget(sep)
-        bar.addSpacing(28)
-
-        self.apply_btn = QPushButton("Apply to device")
-        self.apply_btn.setObjectName("primary")
-        self.apply_btn.setToolTip(
-            "Write this project to the hardware, overwriting what is loaded.")
-        self.apply_btn.clicked.connect(self.on_apply)
-        bar.addWidget(self.apply_btn)
         holder = QWidget(); holder.setLayout(bar)
         root.addWidget(holder)
 
