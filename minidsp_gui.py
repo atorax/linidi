@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSlider,
-    QStatusBar, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QScrollArea, QStatusBar, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
 
@@ -1197,7 +1197,19 @@ class ChannelEditor(QWidget):
             f"border-radius: 6px;")
         cf = QHBoxLayout(chain_frame)
         cf.setContentsMargins(8, 6, 8, 6)
-        cf.addWidget(self.chain)
+        # Every stage is a fixed width so the bar does not reflow when a value
+        # changes, but that made the bar demand ~1250px and the whole window
+        # inherit it as a minimum -- on a narrower screen the editor was cut
+        # off at the right edge with no scrollbar to say so. Scroll the bar
+        # instead: the widths stay fixed, the window does not have to be.
+        self.chain_scroll = QScrollArea()
+        self.chain_scroll.setWidget(self.chain)
+        self.chain_scroll.setWidgetResizable(True)
+        self.chain_scroll.setFrameShape(QFrame.NoFrame)
+        self.chain_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chain_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.chain_scroll.setStyleSheet("background: transparent; border: 0;")
+        cf.addWidget(self.chain_scroll)
         root.addWidget(chain_frame)
 
         basics = QGroupBox("Channel")
