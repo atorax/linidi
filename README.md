@@ -76,6 +76,37 @@ python3 minidsp_gui.py
 
 Useful flags: `--daemon`, `--tcp`, `--cli`, `--device`, `--project`.
 
+### Running the daemon as a service
+
+So it is simply always there:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/minidspd.service <<'EOF'
+[Unit]
+Description=miniDSP control daemon (minidsp-rs)
+After=sound.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/minidspd -c %h/.config/minidsp.toml
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now minidspd.service
+```
+
+A *user* service is enough because the udev rule above grants the `audio`
+group access; it does not need root. `StartLimitIntervalSec=0` keeps the unit
+from being disabled after repeated restarts when the device is unplugged. If
+you want it running without logging in, `sudo loginctl enable-linger $USER`.
+
 ---
 
 ## Safety
@@ -148,10 +179,22 @@ Things that cost real debugging time:
 
 ## Roadmap
 
-- [ ] Read bypass flags, so inactive filters stop reading as live
+- [x] Read coefficients back off the hardware
+- [x] Bypass state, via Device Console import (the hardware cannot report it)
+- [x] Write a full configuration, verified as a byte-level round trip
+- [x] Correct for the device's gain quantisation
 - [ ] Input routing matrix and compressor in the UI
 - [ ] Single-file executable bundling the minidsp-rs binaries
 - [ ] Pure-Python USB HID transport, dropping the minidsp-rs dependency entirely
+
+### On bypass
+
+Bypass is set by command `0x19` and has no readable address — the device
+profile has `_STATUS` symbols for `COMP`, `DGain`, `FIR` and `Mixer`, but none
+for `PEQ` or `BPF`. Coefficients also survive being bypassed, so a dormant
+filter reads back looking exactly like a live one. Importing a Device Console
+export is the only way to recover that state; the app can *write* bypass
+correctly either way.
 
 ---
 
