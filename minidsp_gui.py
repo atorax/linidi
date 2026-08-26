@@ -51,8 +51,14 @@ WARN    = "#d29922"
 DANGER  = "#f0533f"
 
 STYLE = f"""
-QWidget {{ background: {BG}; color: {FG};
-           font-family: system-ui, sans-serif; font-size: 13px; }}
+/* Only real containers paint a background. Setting it on bare QWidget makes
+   every label and checkbox draw the window colour over whatever panel it is
+   sitting on, which shows up as a dark patch behind text on cards and inside
+   group boxes. */
+QWidget {{ color: {FG}; font-family: system-ui, sans-serif; font-size: 13px; }}
+QMainWindow, QDialog {{ background: {BG}; }}
+QLabel, QCheckBox, QGroupBox::title {{ background: transparent; }}
+QSplitter {{ background: transparent; }}
 QGroupBox {{ background: {PANEL}; border: 1px solid {LINE};
              border-radius: 6px; margin-top: 14px; padding-top: 6px; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px;
