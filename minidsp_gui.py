@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -236,7 +237,18 @@ def doc_sections() -> list[tuple[str, str]]:
         else:
             buf.append(line)
     sections.append((title, "\n".join(buf).strip()))
-    return [(t, b) for t, b in sections if b]
+    return [(t, _strip_images(b)) for t, b in sections if b]
+
+
+def _strip_images(md: str) -> str:
+    """Drop image markup before rendering the README in the help window.
+
+    The badges are for the repository page. Here they resolve to nothing --
+    the widget will not fetch over the network, and should not -- so each one
+    draws a broken-image square instead.
+    """
+    md = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", md)
+    return re.sub(r"\n{3,}", "\n\n", md).strip()
 
 
 def logo_pixmap(height: int = 26) -> QPixmap:
@@ -2021,6 +2033,21 @@ class RewDialog(QDialog):
 
 
 
+class OfflineBrowser(QTextBrowser):
+    """A text view that cannot fetch anything off the machine.
+
+    Rich text will happily resolve remote images and stylesheets while
+    rendering. Nothing here needs that, and an application that controls
+    audio hardware has no business making requests on its own, so the
+    resource loader refuses anything that is not a local file.
+    """
+
+    def loadResource(self, kind, url):
+        if url.isLocalFile() or url.scheme() in ("", "qrc", "data"):
+            return super().loadResource(kind, url)
+        return None
+
+
 class HelpDialog(QDialog):
     """The README, with its headings as a menu down the side."""
 
@@ -2047,8 +2074,19 @@ class HelpDialog(QDialog):
         body = QHBoxLayout()
         self.menu = QListWidget()
         self.menu.setFixedWidth(180)
-        self.text = QTextBrowser()
+        self.text = OfflineBrowser()
+        # A clicked link hands off to the system browser, which is the user
+        # asking for it; the window itself still fetches nothing.
         self.text.setOpenExternalLinks(True)
+        # Rendered markdown carries no colours of its own, so it lands in the
+        # widget's default near-black on this theme's dark background.
+        self.text.setStyleSheet(
+            f"QTextBrowser {{ background: {BG}; color: {FG};"
+            f" border: 1px solid {LINE}; border-radius: 6px; padding: 10px; }}")
+        self.text.document().setDefaultStyleSheet(
+            f"a {{ color: {ACCENT}; }}"
+            f"code, pre {{ color: {ACTIVE}; }}"
+            f"h1, h2, h3 {{ color: {FG}; }}")
         body.addWidget(self.menu)
         body.addWidget(self.text, 1)
         root.addLayout(body, 1)
