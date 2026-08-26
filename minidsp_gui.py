@@ -179,6 +179,23 @@ def asset_dir() -> Path:
     return (Path(base) if base else Path(__file__).resolve().parent) / "icons"
 
 
+def logo_pixmap(height: int = 26) -> QPixmap:
+    """The wordmark, scaled to sit in the device card.
+
+    The artwork is white on transparent, which is why it looks blank in a
+    file manager: thumbnailers paint transparency white. It is meant for the
+    dark card it sits on. Returns an empty pixmap if the file is missing, and
+    the caller hides the label rather than showing a broken image.
+    """
+    path = asset_dir() / "LiniDi.png"
+    if not path.exists():
+        return QPixmap()
+    pm = QPixmap(str(path))
+    if pm.isNull():
+        return QPixmap()
+    return pm.scaledToHeight(height, Qt.SmoothTransformation)
+
+
 def speaker_icon(size: int = 22, muted: bool = False,
                  body: str = FG, slash: str = DANGER) -> QIcon:
     """The speaker glyph for the current state.
@@ -1480,6 +1497,19 @@ class MasterStrip(QFrame):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 7, 12, 7)
         self._lay = lay
+
+        self.logo = QLabel()
+        # The card is 44px with 7px margins, so 30 is the most the
+        # wordmark can take; the artwork carries its own small margin
+        # inside that.
+        pm = logo_pixmap(30)
+        if pm.isNull():
+            self.logo.hide()
+        else:
+            self.logo.setPixmap(pm)
+            self.logo.setFixedWidth(pm.width())
+        lay.addWidget(self.logo, 0, Qt.AlignVCenter)
+        lay.addSpacing(16)
 
         self.device_label = QLabel("connecting...")
         self.device_label.setObjectName("muted")
