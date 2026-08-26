@@ -727,8 +727,8 @@ class PeqTable(QTableWidget):
     """Editor for a channel's PEQ bank."""
 
     changed = Signal()
-    COLS = ["#", "On", "Type", "Freq (Hz)", "Q", "Gain (dB)", "Source"]
-    C_NUM, C_ON, C_TYPE, C_FREQ, C_Q, C_GAIN, C_SRC = range(len(COLS))
+    COLS = ["#", "On", "Type", "Freq (Hz)", "Q", "Gain (dB)", "Coeff", "Source"]
+    C_NUM, C_ON, C_TYPE, C_FREQ, C_Q, C_GAIN, C_COEF, C_SRC = range(len(COLS))
 
     def __init__(self):
         super().__init__(0, len(self.COLS))
@@ -740,8 +740,11 @@ class PeqTable(QTableWidget):
         header.setSectionResizeMode(self.C_NUM, QHeaderView.Fixed)
         header.setMinimumSectionSize(26)      # else the header text sets a floor
         self.setColumnWidth(self.C_NUM, 34)
+        header.setSectionResizeMode(self.C_COEF, QHeaderView.Fixed)
+        self.setColumnWidth(self.C_COEF, 62)
         self.setSelectionMode(QTableWidget.NoSelection)
         self.bands: list[dict[str, Any]] = []
+        self.rate = 96000            # set from the project by ChannelEditor
         self._loading = False
 
     def load(self, bands: list[dict[str, Any]]):
@@ -798,8 +801,23 @@ class PeqTable(QTableWidget):
                 sb.valueChanged.connect(self._emit)
                 self.setCellWidget(r, col, sb)
 
+            edit = QPushButton("edit")
+            edit.setToolTip("Show this band's five coefficients, and type "
+                            "them directly.")
+            edit.clicked.connect(lambda _c=False, row=r: self._edit_coeffs(row))
+            self.setCellWidget(r, self.C_COEF, edit)
+
             state = b.get("read_state")
-            if state == "unreadable":
+            # Hand-typed coefficients are checked first: they are the most
+            # recent word on what this band is, and they override wherever it
+            # originally came from. Reporting a band as "from config" after
+            # its numbers have been replaced would be stale.
+            if manual and b.get("manual_source") == "user":
+                label, colour = "hand-typed", WARN
+                tip = ("Coefficients typed in directly. Type, frequency, Q "
+                       "and gain no longer drive this band -- open the "
+                       "coefficient editor to go back to a designed filter.")
+            elif state == "unreadable":
                 label, colour = "not readable", DANGER
                 tip = ("The device does not report PEQ contents, so this band "
                        "was not read.\nThe values shown are from the project, "
@@ -822,6 +840,28 @@ class PeqTable(QTableWidget):
             src.setFlags(Qt.ItemIsEnabled)
             self.setItem(r, self.C_SRC, src)
         self._loading = False
+
+    def _edit_coeffs(self, r: int):
+        """Open the coefficient editor for one band and take the result."""
+        if r >= len(self.bands):
+            return
+        b = self.bands[r]
+        # Read the row before showing what it contains: the spin boxes may
+        # hold edits the band dict has not been given yet.
+        self.store()
+        designed = b.get("manual") is None
+        current = core.peq_biquad(b, self.rate)
+        dlg = BiquadDialog(self, f"Coefficients - band {b.get('index', r)}",
+                           current, self.rate, designed)
+        if not dlg.exec():
+            return
+        if dlg.revert:
+            b["manual"] = None
+        else:
+            b["manual"] = dlg.coeffs()
+            b["manual_source"] = "user"
+        self.load(self.bands)
+        self.changed.emit()
 
     def _sync_badge(self, r: int):
         """Fill or hollow a badge as its band is switched on or off."""
@@ -1244,6 +1284,7 @@ class ChannelEditor(QWidget):
         else:
             self.routing.load(chan.get("routing", []),
                               (self.project or {}).get("outputs", []))
+        self.peq.rate = int((self.project or {}).get("rate", 96000))
         self.peq.load(chan.get("peq", []))
         self._update_chain()
         self._loading = False
@@ -1643,6 +1684,99 @@ class RewDialog(QDialog):
 
     def biquads(self):
         return core.parse_rew_biquads(self.text.toPlainText())
+
+
+class BiquadDialog(QDialog):
+    """See and type one band's five coefficients.
+
+    A band is either designed -- type, frequency, Q and gain, from which the
+    coefficients follow -- or manual, a set of coefficients that came from
+    somewhere else and cannot necessarily be described by those four numbers.
+    Until now manual bands were shown with every control greyed out and the
+    numbers themselves nowhere on screen, which left filters read off the
+    hardware or imported from REW impossible to inspect, let alone adjust.
+    """
+
+    KEYS = ("b0", "b1", "b2", "a1", "a2")
+
+    def __init__(self, parent, title: str, coeffs: dict[str, float],
+                 rate: int, designed: bool):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.rate = rate
+        self.revert = False
+        lay = QVBoxLayout(self)
+
+        hint = QLabel(
+            "miniDSP adds the feedback terms, so a1 and a2 carry the opposite "
+            "sign to the textbook form. Values are used exactly as typed.")
+        hint.setObjectName("muted"); hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        form = QFormLayout()
+        self.boxes: dict[str, QDoubleSpinBox] = {}
+        for k in self.KEYS:
+            sb = QDoubleSpinBox()
+            sb.setRange(-64.0, 64.0)
+            sb.setDecimals(7)
+            sb.setSingleStep(0.0001)
+            sb.setValue(float(coeffs.get(k, 0.0)))
+            sb.setFont(QFont("monospace", 10))
+            sb.valueChanged.connect(self._recheck)
+            self.boxes[k] = sb
+            form.addRow(k, sb)
+        lay.addLayout(form)
+
+        self.report = QLabel("")
+        self.report.setWordWrap(True)
+        lay.addWidget(self.report)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.ok = buttons.button(QDialogButtonBox.Ok)
+        self.ok.setText("Use these coefficients")
+        if not designed:
+            back = buttons.addButton("Back to designed",
+                                     QDialogButtonBox.ResetRole)
+            back.setToolTip("Discard these coefficients and let the type, "
+                            "frequency, Q and gain drive this band again.")
+            back.clicked.connect(self._revert)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self._recheck()
+
+    def _revert(self):
+        self.revert = True
+        self.accept()
+
+    def coeffs(self) -> dict[str, float]:
+        return {k: self.boxes[k].value() for k in self.KEYS}
+
+    def _recheck(self):
+        """Describe what has been typed, and refuse to pass on a runaway."""
+        bq = self.coeffs()
+        stable = core.biquad_is_stable(bq)
+        self.ok.setEnabled(stable)
+        if not stable:
+            self.report.setText(
+                "Unstable: the poles are on or outside the unit circle. This "
+                "section would run away rather than filter, and its output "
+                "goes to a driver. Not writable.")
+            self.report.setStyleSheet(f"color: {DANGER};")
+            return
+
+        bits = [f"DC {core.biquad_gain_db(bq, 1.0, self.rate):+.2f} dB",
+                f"Nyquist {core.biquad_gain_db(bq, self.rate / 2 - 1, self.rate):+.2f} dB"]
+        decoded = core.decode_peq(bq, self.rate)
+        if decoded:
+            kind, f0, q, gain = decoded
+            bits.append(f"reads as {kind} {f0:.1f} Hz Q{q:.3f} {gain:+.2f} dB")
+        elif core.is_bypass(bq):
+            bits.append("passthrough: this band does nothing")
+        else:
+            bits.append("no standard shape: kept as raw coefficients")
+        self.report.setText("Stable.  " + "   ".join(bits))
+        self.report.setStyleSheet(f"color: {MUTED};")
 
 
 class MainWindow(QMainWindow):

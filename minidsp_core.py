@@ -219,6 +219,24 @@ def is_first_order(bq: dict[str, float], tol: float = 1e-9) -> bool:
     return abs(bq.get("b2", 0.0)) < tol and abs(bq.get("a2", 0.0)) < tol
 
 
+def biquad_is_stable(bq: dict[str, float]) -> bool:
+    """Whether the section's poles sit inside the unit circle.
+
+    miniDSP adds the feedback terms rather than subtracting them, so the
+    denominator is 1 - a1*z^-1 - a2*z^-2 and Jury's conditions come out as
+    below. Worth checking before anything is written: an unstable section does
+    not merely sound wrong, it runs away, and on an active crossover the
+    output of that reaches a driver directly.
+    """
+    a1, a2 = float(bq["a1"]), float(bq["a2"])
+    return abs(a2) < 1.0 and abs(a1) < 1.0 - a2
+
+
+def biquad_gain_db(bq: dict[str, float], freq: float, rate: int) -> float:
+    """Magnitude response of one section at one frequency, in dB."""
+    return response_db([bq], [freq], rate)[0]
+
+
 def classify_biquad(bq: dict[str, float]) -> str:
     """Rough shape of a biquad from its numerator."""
     b0, b1, b2 = bq["b0"], bq["b1"], bq["b2"]
