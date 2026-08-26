@@ -2768,9 +2768,11 @@ class MainWindow(QMainWindow):
         self.on_select(self.chan_list.currentRow())
         self.update_warning()
         self.statusBar().showMessage(
-            f"Imported {stats['crossover']} crossover groups and "
-            f"{stats['peq']} PEQ bands across {stats['outputs']} outputs "
-            f"({stats['bypassed']} bypassed)", 10000)
+            f"Imported {stats['peq']} PEQ bands and {stats['crossover']} "
+            f"crossover groups across {stats['inputs']} inputs and "
+            f"{stats['outputs']} outputs, plus {stats['routing']} routing "
+            f"cells  -  {stats['bypassed']} of those filters are bypassed",
+            12000)
 
     def on_rew(self):
         chan, _ = self.current_channel()

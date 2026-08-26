@@ -1138,7 +1138,8 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
     """
     filters = parsed["filters"]
     items = parsed["items"]
-    stats = {"outputs": 0, "crossover": 0, "peq": 0, "bypassed": 0}
+    stats = {"outputs": 0, "inputs": 0, "crossover": 0, "peq": 0,
+             "bypassed": 0, "routing": 0}
 
     for idx, spec in enumerate(amap.outputs):
         if idx >= len(project["outputs"]):
@@ -1205,11 +1206,12 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
         if idx >= len(project["inputs"]):
             break
         inp = project["inputs"][idx]
+        stats["inputs"] += 1
         for route in inp.get("routing", []):
             key = f"Mixer_{idx}_{route['index']}_status"
             if key in by_name:
                 route["enabled"] = int(by_name[key]) == 2
-                stats["routing"] = stats.get("routing", 0) + 1
+                stats["routing"] += 1
             gkey = f"Mixer_{idx}_{route['index']}"
             if gkey in by_name:
                 route["gain"] = by_name[gkey]
@@ -1222,6 +1224,12 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
             if not f:
                 continue
             dst = inp["peq"][slot]
+            # Counted alongside the output bands. Leaving them out meant an
+            # import reported nothing for an input-voiced setup, where every
+            # band that matters lives on the inputs.
+            stats["peq"] += 1
+            if f["bypass"]:
+                stats["bypassed"] += 1
             dst["bypass_source"] = "import"
             dst["read_state"] = "config"
             dst["enabled"] = not f["bypass"]
