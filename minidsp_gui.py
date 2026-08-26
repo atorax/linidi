@@ -475,6 +475,7 @@ class ChannelEditor(QWidget):
     def __init__(self):
         super().__init__()
         self.chan: dict[str, Any] | None = None
+        self.project: dict[str, Any] | None = None
         self.is_output = True
         self._loading = False
 
@@ -505,6 +506,9 @@ class ChannelEditor(QWidget):
 
         self.plot = ResponsePlot()
         root.addWidget(self.plot, 2)
+        self.legend = QLabel("")
+        self.legend.setObjectName("muted")
+        root.addWidget(self.legend)
 
         xo = QHBoxLayout()
         self.xo_groups = [CrossoverGroup("Crossover group 1"),
@@ -556,20 +560,64 @@ class ChannelEditor(QWidget):
         self.chan["peq"] = self.peq.store()
         self.refresh_plot()
 
+    def _feeding_inputs(self) -> list[dict[str, Any]]:
+        """Inputs routed to the currently selected output.
+
+        Input PEQ is applied *before* the crossover split, so it is part of
+        what the driver on this output actually receives. A common house style
+        is to flatten response at the input and keep the outputs as pure
+        crossover, which makes the output-only curve an incomplete picture.
+        """
+        if not self.is_output or not self.project or self.chan is None:
+            return []
+        idx = self.chan.get("index")
+        feeding = []
+        for inp in self.project.get("inputs", []):
+            for route in inp.get("routing", []):
+                if route.get("index") == idx and route.get("enabled"):
+                    feeding.append(inp)
+                    break
+        return feeding
+
     def refresh_plot(self, rate: int = 96000):
         if self.chan is None:
             return
         freqs = self.plot.freqs
         try:
-            bqs = [core.peq_biquad(b, rate) for b in self.chan.get("peq", [])]
+            own = [core.peq_biquad(b, rate) for b in self.chan.get("peq", [])]
             if self.is_output:
                 for g in self.chan.get("crossover", []):
-                    bqs += [b for b in core.crossover_biquads(g, rate)
+                    own += [b for b in core.crossover_biquads(g, rate)
                             if not core.is_bypass(b)]
-            total = core.response_db(bqs, freqs, rate)
-            self.plot.set_curves([(freqs, total, ACCENT, False)])
+
+            curves = [(freqs, core.response_db(own, freqs, rate), ACCENT, False)]
+
+            # Dashed: everything the driver sees, input EQ included.
+            feeding = self._feeding_inputs()
+            if feeding:
+                upstream: list[dict[str, float]] = []
+                for inp in feeding[:1]:      # one input's chain; sums are not modelled
+                    upstream += [core.peq_biquad(b, rate)
+                                 for b in inp.get("peq", [])]
+                if any(not core.is_bypass(b) for b in upstream):
+                    curves.append((freqs,
+                                   core.response_db(upstream + own, freqs, rate),
+                                   WARN, True))
+            self.plot.set_curves(curves)
+
+            if not self.is_output:
+                self.legend.setText(
+                    "Input EQ, applied before the crossover split - it reaches "
+                    "every output this input is routed to.")
+            elif len(curves) > 1:
+                self.legend.setText(
+                    "solid: this output's own chain     "
+                    "dashed: what the driver receives, input EQ included")
+            else:
+                self.legend.setText("solid: this output's own chain")
         except Exception:                                # noqa: BLE001
             self.plot.set_curves([])
+            self.legend.setText("")
 
 
 class MasterStrip(QFrame):
@@ -911,6 +959,7 @@ class MainWindow(QMainWindow):
     def on_select(self, _row):
         chan, is_out = self.current_channel()
         if chan is not None:
+            self.editor.project = self.project
             self.editor.load(chan, is_out)
             self.editor.refresh_plot(int(self.project.get("rate", 96000)))
 
