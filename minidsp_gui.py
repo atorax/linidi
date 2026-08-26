@@ -53,6 +53,11 @@ OK      = "#3fb950"
 WARN    = "#d29922"
 DANGER  = "#f0533f"
 
+# Vertical padding on a list item. Rows that hold a widget have to add this to
+# their size hint, so both sides read it from here rather than from a literal
+# in the stylesheet that nothing else can see.
+LIST_ITEM_PAD_Y = 6
+
 STYLE = f"""
 /* Only real containers paint a background. Setting it on bare QWidget makes
    every label and checkbox draw the window colour over whatever panel it is
@@ -82,7 +87,8 @@ QComboBox, QDoubleSpinBox, QPlainTextEdit, QListWidget, QTableWidget {{
     background: {PANEL2}; border: 1px solid {LINE}; border-radius: 4px;
     padding: 2px 4px; selection-background-color: {ACCENT};
 }}
-QListWidget::item {{ padding: 6px 8px; border-left: 3px solid transparent; }}
+QListWidget::item {{ padding: {LIST_ITEM_PAD_Y}px 8px;
+                     border-left: 3px solid transparent; }}
 QListWidget::item:selected {{ background: {PANEL2}; color: {FG};
                               border-left-color: {ACCENT}; }}
 QHeaderView::section {{ background: {PANEL}; color: {MUTED};
@@ -901,28 +907,41 @@ def passband(chan: dict[str, Any]) -> str:
 
 
 class ChannelRow(QWidget):
-    """One channel in the navigator: its mute, its name, and what it does.
+    """One channel in the navigator: its name, what it does, and its mute.
 
-    Two lines rather than one. The column is narrow and the mute control has
-    to come out of it, which leaves too little width for a name and a band
-    side by side; stacking them means neither has to be elided and a renamed
-    channel still fits.
+    A single line, with the mute at the trailing edge. The name column is a
+    fixed width so the summaries line up rather than starting wherever the
+    name happened to end.
     """
 
     toggled = Signal(bool)
 
-    def __init__(self, name: str, detail: str, muted: bool, dim: bool):
+    ROW_HEIGHT = 28
+
+    def __init__(self, name: str, detail: str, muted: bool, dim: bool,
+                 name_width: int):
         super().__init__()
+        self.setFixedHeight(self.ROW_HEIGHT)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 2, 0, 2)
-        lay.setSpacing(8)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+
+        self.name = QLabel(name)
+        self.name.setFixedWidth(name_width)
+        if muted or dim:
+            self.name.setStyleSheet(f"color: {MUTED};")
+        lay.addWidget(self.name)
+
+        self.detail = QLabel(detail)
+        self.detail.setObjectName("muted")
+        lay.addWidget(self.detail, 1)
 
         self.mute = QPushButton()
         self.mute.setCheckable(True)
         self.mute.setChecked(muted)
-        self.mute.setFixedSize(26, 26)
-        self.mute.setIconSize(QSize(17, 17))
-        self.mute.setIcon(speaker_icon(17, muted=muted))
+        self.mute.setFixedSize(24, 24)
+        self.mute.setIconSize(QSize(16, 16))
+        self.mute.setIcon(speaker_icon(16, muted=muted))
         self.mute.setCursor(Qt.PointingHandCursor)
         self.mute.setToolTip(f"{'Unmute' if muted else 'Mute'} {name}")
         self.mute.setStyleSheet(
@@ -930,19 +949,14 @@ class ChannelRow(QWidget):
             f"QPushButton:hover {{ background: {PANEL2}; border-radius: 4px; }}")
         # Clicking the mute must not also change which channel is selected.
         self.mute.clicked.connect(lambda: self.toggled.emit(self.mute.isChecked()))
-        lay.addWidget(self.mute)
+        lay.addWidget(self.mute, 0, Qt.AlignVCenter)
 
-        text = QVBoxLayout()
-        text.setContentsMargins(0, 0, 0, 0)
-        text.setSpacing(0)
-        self.name = QLabel(name)
-        if muted or dim:
-            self.name.setStyleSheet(f"color: {MUTED};")
-        self.detail = QLabel(detail)
-        self.detail.setObjectName("muted")
-        text.addWidget(self.name)
-        text.addWidget(self.detail)
-        lay.addLayout(text, 1)
+    def elide_detail(self, text: str):
+        """Shorten the summary to whatever width is left for it."""
+        fm = self.detail.fontMetrics()
+        self.detail.setText(
+            fm.elidedText(text, Qt.ElideRight, max(20, self.detail.width())))
+        self.detail.setToolTip(text)
 
 
 class ChannelEditor(QWidget):
@@ -1674,15 +1688,28 @@ class MainWindow(QMainWindow):
                     fed.add(r.get("index"))
         return fed
 
+    def _name_column(self) -> int:
+        """Width of the name column: the widest channel name, measured once."""
+        names = [c.get("name", "") for c in
+                 self.project["inputs"] + self.project["outputs"]]
+        fm = self.chan_list.fontMetrics()
+        return max(36, max((fm.horizontalAdvance(n) for n in names), default=36))
+
     def _add_channel_row(self, kind: str, i: int, chan: dict[str, Any],
                          detail: str, dim: bool):
         item = QListWidgetItem()
         item.setData(Qt.UserRole, (kind, i))
         row = ChannelRow(chan.get("name", ""), detail,
-                         bool(chan.get("mute")), dim)
+                         bool(chan.get("mute")), dim, self._name_col)
+        row.full_detail = detail
         row.toggled.connect(
             lambda muted, k=kind, n=i: self.on_channel_mute(k, n, muted))
-        item.setSizeHint(row.sizeHint())
+        # The stylesheet pads list items, and that padding is not taken out of
+        # the rect an item widget is laid into. Sizing the row to the widget
+        # exactly left the icon standing in the padding with its bottom
+        # clipped, so ask for the padding on top of the row's own height.
+        item.setSizeHint(QSize(row.sizeHint().width(),
+                               ChannelRow.ROW_HEIGHT + 2 * LIST_ITEM_PAD_Y))
         self.chan_list.addItem(item)
         self.chan_list.setItemWidget(item, row)
 
@@ -1719,6 +1746,7 @@ class MainWindow(QMainWindow):
 
         self.chan_list.blockSignals(True)
         self.chan_list.clear()
+        self._name_col = self._name_column()
 
         self._add_header("Inputs · voicing")
         for i, inp in enumerate(self.project["inputs"]):
@@ -1742,6 +1770,15 @@ class MainWindow(QMainWindow):
                     target = r
                     break
         self.chan_list.setCurrentRow(target)
+        # Summaries can only be trimmed once the rows have been laid out and
+        # the labels know how much width they were actually given.
+        QTimer.singleShot(0, self._elide_details)
+
+    def _elide_details(self):
+        for r in range(self.chan_list.count()):
+            row = self.chan_list.itemWidget(self.chan_list.item(r))
+            if row is not None:
+                row.elide_detail(row.full_detail)
 
     def current_channel(self):
         item = self.chan_list.currentItem()
