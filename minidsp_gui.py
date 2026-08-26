@@ -1498,15 +1498,20 @@ class MasterStrip(QFrame):
         self.volume_label.setFont(QFont("monospace", 10))
         lay.addWidget(self.volume_label)
 
-        self.mute = QPushButton()
-        self.mute.setCheckable(True)
-        self.mute.setIconSize(QSize(20, 20))
-        self.mute.setFixedWidth(44)
-        self.mute.setToolTip("Master mute")
-        self._set_mute_icon(False)
-        self.mute.clicked.connect(
-            lambda: self._emit({"mute": self.mute.isChecked()}))
-        lay.addWidget(self.mute)
+        # Master mute sits here, as MUTE ALL. There used to be a speaker
+        # button in this slot as well, but it toggled the same master mute --
+        # two controls for one function, each able to look like it disagreed
+        # with the other.
+        lay.addSpacing(8)
+        self.muted = False
+        self.panic_btn = QPushButton("  MUTE ALL")
+        self.panic_btn.setObjectName("danger")
+        self.panic_btn.setIcon(led_icon(12, "#000000"))
+        self.panic_btn.setIconSize(QSize(12, 12))
+        self.panic_btn.setToolTip("Mute the device immediately")
+        self.panic_btn.clicked.connect(self.panic.emit)
+        lay.addWidget(self.panic_btn)
+        lay.addSpacing(14)
 
         lab = QLabel("Source"); lab.setObjectName("muted")
         lay.addWidget(lab)
@@ -1526,13 +1531,6 @@ class MasterStrip(QFrame):
         lay.addWidget(self.preset)
 
         lay.addStretch(1)
-        # Placed by the window, so status text can sit ahead of the buttons.
-        self.panic_btn = QPushButton("  MUTE ALL")
-        self.panic_btn.setObjectName("danger")
-        self.panic_btn.setIcon(led_icon(12, "#000000"))
-        self.panic_btn.setIconSize(QSize(12, 12))
-        self.panic_btn.setToolTip("Mute the device immediately")
-        self.panic_btn.clicked.connect(self.panic.emit)
 
     def add_trailing(self, *widgets, spacing: int = 0):
         """Append controls to the right-hand end of the card."""
@@ -1540,9 +1538,6 @@ class MasterStrip(QFrame):
             self._lay.addSpacing(spacing)
         for wdg in widgets:
             self._lay.addWidget(wdg)
-
-    def _set_mute_icon(self, muted: bool):
-        self.mute.setIcon(speaker_icon(20, muted=muted))
 
     def _volume_preview(self, v):
         self.volume_label.setText(f"{v / 10.0:.1f} dB")
@@ -1561,8 +1556,7 @@ class MasterStrip(QFrame):
             self.volume.setValue(int(round(float(m.get("volume", 0.0)) * 10)))
             self._volume_preview(self.volume.value())
         muted = bool(m.get("mute"))
-        self.mute.setChecked(muted)
-        self._set_mute_icon(muted)
+        self.muted = muted
         # MUTE ALL keeps its label and signals state by colour alone: a
         # dark LED and white text while sound is passing, both red once
         # the device is muted. The label never changes, so the button
@@ -1657,7 +1651,6 @@ class MainWindow(QMainWindow):
         self.apply_btn.setToolTip(
             "Write this project to the hardware, overwriting what is loaded.")
         self.apply_btn.clicked.connect(self.on_apply)
-        self.master.add_trailing(self.master.panic_btn, spacing=14)
         self.master.add_trailing(self.apply_btn, spacing=8)
 
         card_wrap = QWidget()
@@ -2064,7 +2057,7 @@ class MainWindow(QMainWindow):
         one-way mute would mean the lit indicator could not be cleared from
         the control that lit it.
         """
-        target = not self.master.mute.isChecked()
+        target = not self.master.muted
         self.tasks.run(
             lambda: self.daemon.set_master(mute=target),
             on_done=lambda _: self.statusBar().showMessage(
