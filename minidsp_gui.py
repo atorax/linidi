@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSlider,
     QStackedWidget, QStatusBar, QTableWidget, QTableWidgetItem,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -56,9 +57,6 @@ MUTED   = "#8b93a3"
 #   MUTED     grey     off, or not applicable
 ACTIVE  = "#f0883e"
 ACCENT  = "#4f9cf9"
-# Traces on the response plot are data, not state, and take their own colours
-# so that "active" keeps meaning one thing.
-TRACE_2 = "#2dd4bf"
 OK      = "#3fb950"
 WARN    = "#d29922"
 DANGER  = "#f0533f"
@@ -185,10 +183,60 @@ QPushButton#tab:checked {{ color: {ACTIVE}; border-bottom-color: {ACTIVE};
 # Icons
 # --------------------------------------------------------------------------
 
+def bundle_dir() -> Path:
+    """The root of the source tree, or of a frozen build's unpacked files."""
+    base = getattr(sys, "_MEIPASS", None)
+    return Path(base) if base else Path(__file__).resolve().parent
+
+
 def asset_dir() -> Path:
     """Where bundled assets live, in a source tree or inside a frozen build."""
-    base = getattr(sys, "_MEIPASS", None)
-    return (Path(base) if base else Path(__file__).resolve().parent) / "icons"
+    return bundle_dir() / "icons"
+
+
+def help_icon(size: int = 18, colour: str = MUTED) -> QIcon:
+    """A circled question mark, painted rather than shipped as a file."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(colour))
+    pen.setWidthF(1.5)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(QRectF(1.0, 1.0, size - 2.0, size - 2.0))
+    f = QFont()
+    f.setPointSizeF(size * 0.52)
+    f.setBold(True)
+    p.setFont(f)
+    p.drawText(pm.rect(), Qt.AlignCenter, "?")
+    p.end()
+    return QIcon(pm)
+
+
+def doc_sections() -> list[tuple[str, str]]:
+    """The README, split on its headings, for the help window's menu.
+
+    Falls back to a short note if the file is not beside the program, so a
+    build that forgot to bundle it opens a window that explains itself rather
+    than an empty one.
+    """
+    path = bundle_dir() / "README.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return [("About", "# minidsp-gui\n\nDocumentation was not bundled "
+                          "with this build. The README is in the source "
+                          "repository.")]
+    sections, title, buf = [], "Overview", []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            sections.append((title, "\n".join(buf).strip()))
+            title, buf = line[3:].strip(), []
+        else:
+            buf.append(line)
+    sections.append((title, "\n".join(buf).strip()))
+    return [(t, b) for t, b in sections if b]
 
 
 def logo_pixmap(height: int = 26) -> QPixmap:
@@ -1676,7 +1724,7 @@ class ChannelEditor(QWidget):
                     own += [b for b in core.crossover_biquads(g, rate)
                             if not core.is_bypass(b)]
 
-            curves = [(freqs, core.response_db(own, freqs, rate), ACCENT, False)]
+            curves = [(freqs, core.response_db(own, freqs, rate), ACTIVE, False)]
 
             # Dashed: everything the driver sees, input EQ included.
             feeding = self._feeding_inputs()
@@ -1688,7 +1736,7 @@ class ChannelEditor(QWidget):
                 if any(not core.is_bypass(b) for b in upstream):
                     curves.append((freqs,
                                    core.response_db(upstream + own, freqs, rate),
-                                   WARN, True))
+                                   ACCENT, True))
             self.plot.set_curves(curves)
             self.plot.set_bands(self._band_curves(freqs, rate))
             self.plot.set_phases(self._phase_curves(freqs, rate)
@@ -1751,8 +1799,8 @@ class ChannelEditor(QWidget):
 
     def _phase_curves(self, freqs, rate: int) -> list[dict[str, Any]]:
         out = []
-        for chan, colour in [(self.chan, ACCENT)] + [
-                (p, TRACE_2) for p in self._crossover_partners()]:
+        for chan, colour in [(self.chan, ACTIVE)] + [
+                (p, ACCENT) for p in self._crossover_partners()]:
             bqs = self._chain_biquads(chan, rate)
             out.append({
                 "degs": core.response_phase(
@@ -1972,6 +2020,60 @@ class RewDialog(QDialog):
         return core.parse_rew_biquads(self.text.toPlainText())
 
 
+
+class HelpDialog(QDialog):
+    """The README, with its headings as a menu down the side."""
+
+    def __init__(self, parent, subtitle: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("LiniDi - help")
+        self.resize(880, 620)
+        root = QVBoxLayout(self)
+
+        head = QHBoxLayout()
+        logo = QLabel()
+        pm = logo_pixmap(26)
+        if not pm.isNull():
+            logo.setPixmap(pm)
+        head.addWidget(logo)
+        if subtitle:
+            lab = QLabel(subtitle)
+            lab.setObjectName("muted")
+            head.addSpacing(12)
+            head.addWidget(lab)
+        head.addStretch(1)
+        root.addLayout(head)
+
+        body = QHBoxLayout()
+        self.menu = QListWidget()
+        self.menu.setFixedWidth(180)
+        self.text = QTextBrowser()
+        self.text.setOpenExternalLinks(True)
+        body.addWidget(self.menu)
+        body.addWidget(self.text, 1)
+        root.addLayout(body, 1)
+
+        self.sections = doc_sections()
+        for title, _ in self.sections:
+            self.menu.addItem(QListWidgetItem(title))
+        self.menu.currentRowChanged.connect(self._show)
+        self.menu.setCurrentRow(0)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        root.addWidget(buttons)
+
+    def _show(self, row: int):
+        if 0 <= row < len(self.sections):
+            title, body = self.sections[row]
+            # Rendered as Markdown rather than dumped as plain text: the
+            # README is full of lists, code and tables that are unreadable
+            # raw.
+            self.text.setMarkdown(f"## {title}\n\n{body}"
+                                  if title != "Overview" else body)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, opts):
         super().__init__()
@@ -2009,7 +2111,16 @@ class MainWindow(QMainWindow):
         self.apply_btn.setToolTip(
             "Write this project to the hardware, overwriting what is loaded.")
         self.apply_btn.clicked.connect(self.on_apply)
+        self.help_btn = QPushButton()
+        self.help_btn.setIcon(help_icon(18))
+        self.help_btn.setIconSize(QSize(18, 18))
+        self.help_btn.setFixedWidth(34)
+        self.help_btn.setCursor(Qt.PointingHandCursor)
+        self.help_btn.setToolTip("What this is, how it works, and what to be "
+                                 "careful with")
+        self.help_btn.clicked.connect(self.on_help)
         self.master.add_trailing(self.apply_btn, spacing=8)
+        self.master.add_trailing(self.help_btn, spacing=8)
 
         card_wrap = QWidget()
         cw = QHBoxLayout(card_wrap)
@@ -2421,6 +2532,12 @@ class MainWindow(QMainWindow):
         self.tasks.run(
             lambda: self.daemon.set_master(**payload),
             on_error=lambda e: self.statusBar().showMessage(e, 6000))
+
+    def on_help(self):
+        info = ""
+        if self.amap is not None:
+            info = self.master.device_label.text()
+        HelpDialog(self, info).exec()
 
     def on_panic(self):
         """Toggle master mute.

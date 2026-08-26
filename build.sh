@@ -38,6 +38,7 @@ EOF
     --add-data "icons:icons" \
     --add-data "NOTICE:." \
     --add-data "LICENSE:." \
+    --add-data "README.md:." \
     minidsp_gui.py
 
 echo
