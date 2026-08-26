@@ -154,10 +154,8 @@ QComboBox, QDoubleSpinBox, QPlainTextEdit, QListWidget, QTableWidget {{
     background: {PANEL2}; border: 1px solid {LINE}; border-radius: 4px;
     padding: 2px 4px; selection-background-color: {ACCENT};
 }}
-QListWidget::item {{ padding: {LIST_ITEM_PAD_Y}px 8px;
-                     border-left: 3px solid transparent; }}
-QListWidget::item:selected {{ background: {PANEL2}; color: {FG};
-                              border-left-color: {ACCENT}; }}
+QListWidget::item {{ padding: {LIST_ITEM_PAD_Y}px 8px; border: 0; }}
+QListWidget::item:selected {{ background: transparent; }}
 QHeaderView::section {{ background: {PANEL}; color: {MUTED};
                         border: 0; border-bottom: 1px solid {LINE};
                         padding: 4px; font-size: 11px; }}
@@ -1264,8 +1262,13 @@ class ChannelRow(QWidget):
                  name_width: int):
         super().__init__()
         self.setFixedHeight(self.ROW_HEIGHT)
+        self.setObjectName("navRow")
+        # A bare QWidget ignores a stylesheet background unless asked to draw
+        # one, which is why the cards were invisible at first.
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.set_selected(False)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(8, 0, 6, 0)
         lay.setSpacing(6)
 
         self.name = QLabel(name)
@@ -1292,6 +1295,19 @@ class ChannelRow(QWidget):
         # Clicking the mute must not also change which channel is selected.
         self.mute.clicked.connect(lambda: self.toggled.emit(self.mute.isChecked()))
         lay.addWidget(self.mute, 0, Qt.AlignVCenter)
+
+    def set_selected(self, on: bool):
+        """Each row is a card, darker than the panel it sits on.
+
+        Selection is drawn by the card rather than by the list item behind it:
+        the widget covers that item completely, so anything the view painted
+        there would be hidden.
+        """
+        edge = ACCENT if on else "#2b3140"
+        fill = PANEL2 if on else BG
+        self.setStyleSheet(
+            f"#navRow {{ background: {fill}; border: 1px solid {edge};"
+            f" border-radius: 6px; }}")
 
     def elide_detail(self, text: str):
         """Shorten the summary to whatever width is left for it."""
@@ -2158,9 +2174,22 @@ class MainWindow(QMainWindow):
                     target = r
                     break
         self.chan_list.setCurrentRow(target)
+        self._paint_selection()
         # Summaries can only be trimmed once the rows have been laid out and
         # the labels know how much width they were actually given.
         QTimer.singleShot(0, self._elide_details)
+
+    def _paint_selection(self):
+        """Tell each card whether it is the selected one.
+
+        The row widget covers its list item completely, so the selection the
+        view would paint behind it never shows; the card has to draw it.
+        """
+        current = self.chan_list.currentRow()
+        for r in range(self.chan_list.count()):
+            row = self.chan_list.itemWidget(self.chan_list.item(r))
+            if row is not None:
+                row.set_selected(r == current)
 
     def _elide_details(self):
         for r in range(self.chan_list.count()):
@@ -2181,6 +2210,7 @@ class MainWindow(QMainWindow):
     # ---- events ----
 
     def on_select(self, _row):
+        self._paint_selection()
         chan, is_out = self.current_channel()
         if chan is not None:
             self.editor.project = self.project
