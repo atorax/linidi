@@ -50,11 +50,18 @@ LINE    = "#333844"
 MINOR_GRID = "#23262e"
 FG      = "#e6e8ec"
 MUTED   = "#8b93a3"
+# Three states, one rule:
+#   ACTIVE    orange   the thing you are on right now
+#   ACCENT    blue     on, but not what you are looking at
+#   MUTED     grey     off, or not applicable
+ACTIVE  = "#f0883e"
 ACCENT  = "#4f9cf9"
+# Traces on the response plot are data, not state, and take their own colours
+# so that "active" keeps meaning one thing.
+TRACE_2 = "#2dd4bf"
 OK      = "#3fb950"
 WARN    = "#d29922"
 DANGER  = "#f0533f"
-TAB_ON  = "#f0883e"
 
 # One colour per PEQ band, so a band's row in the table, its own curve on the
 # plot and the marker sitting on that curve are all obviously the same filter.
@@ -169,7 +176,7 @@ QStatusBar {{ background: {PANEL}; color: {MUTED}; }}
 QPushButton#tab {{ background: transparent; border: 0; padding: 3px 2px;
                    border-bottom: 2px solid transparent; color: {MUTED}; }}
 QPushButton#tab:hover {{ color: {FG}; }}
-QPushButton#tab:checked {{ color: {TAB_ON}; border-bottom-color: {TAB_ON};
+QPushButton#tab:checked {{ color: {ACTIVE}; border-bottom-color: {ACTIVE};
                            font-weight: 600; }}
 """
 
@@ -1109,8 +1116,8 @@ class ChainBar(QWidget):
     """
     CURRENT_CSS = f"""
         QPushButton {{
-            background: {ACCENT}; border: 1px solid {ACCENT};
-            border-radius: 5px; padding: 4px 9px; color: #06101f;
+            background: {ACTIVE}; border: 1px solid {ACTIVE};
+            border-radius: 5px; padding: 4px 9px; color: #1a1206;
             font-weight: 700;
         }}
     """
@@ -1358,7 +1365,7 @@ class ChannelRow(QWidget):
         the widget covers that item completely, so anything the view painted
         there would be hidden.
         """
-        edge = ACCENT if on else "#2b3140"
+        edge = ACTIVE if on else "#2b3140"
         fill = PANEL2 if on else BG
         self.setStyleSheet(
             f"#navRow {{ background: {fill}; border: 1px solid {edge};"
@@ -1745,7 +1752,7 @@ class ChannelEditor(QWidget):
     def _phase_curves(self, freqs, rate: int) -> list[dict[str, Any]]:
         out = []
         for chan, colour in [(self.chan, ACCENT)] + [
-                (p, TAB_ON) for p in self._crossover_partners()]:
+                (p, TRACE_2) for p in self._crossover_partners()]:
             bqs = self._chain_biquads(chan, rate)
             out.append({
                 "degs": core.response_phase(
