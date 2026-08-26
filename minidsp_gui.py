@@ -15,6 +15,7 @@ License: Apache-2.0
 from __future__ import annotations
 
 import argparse
+import math
 import copy
 import json
 import sys
@@ -465,8 +466,22 @@ class ResponsePlot(QWidget):
         self.phases = phases
         self.update()
 
+    def _phase_range(self):
+        """Degree bounds covering what is actually drawn, in 90 degree steps."""
+        vals = [d for t in self.phases
+                for d, keep in zip(t["degs"], t.get("mask") or [True] * len(t["degs"]))
+                if keep]
+        if not vals:
+            return -180.0, 180.0
+        lo = math.floor(min(vals) / 90.0) * 90.0
+        hi = math.ceil(max(vals) / 90.0) * 90.0
+        if hi - lo < 180.0:
+            hi = lo + 180.0
+        return lo, hi
+
     def _py(self, deg, h):
-        return h - (deg + 180.0) / 360.0 * h
+        lo, hi = self._phase_range()
+        return h - (deg - lo) / (hi - lo) * h
 
     def set_bands(self, bands):
         """Individual PEQ curves, each tagged with its band number.
@@ -564,15 +579,21 @@ class ResponsePlot(QWidget):
         if not self.phases:
             return
         p.setFont(QFont("monospace", 8))
-        for deg in (-180, -90, 0, 90, 180):
+        lo, hi = self._phase_range()
+        step = 90.0
+        while (hi - lo) / step > 8:        # keep the scale readable when a
+            step += 90.0                   # delay stretches the range
+        deg = lo
+        while deg <= hi + 1:
             y = self._py(deg, h)
-            if deg:                       # 0 already has the magnitude rule
+            if abs(deg) > 1:              # 0 already has the magnitude rule
                 p.setPen(QPen(QColor(MINOR_GRID), 1, Qt.DotLine))
                 p.drawLine(QPointF(0, y), QPointF(w, y))
             p.setPen(QColor(MUTED))
-            txt = f"{deg:+d}\u00b0"
+            txt = f"{deg:+.0f}\u00b0"
             p.drawText(QPointF(w - 4 - p.fontMetrics().horizontalAdvance(txt),
-                               max(10, y - 3)), txt)
+                               max(10, min(h - 2, y - 3))), txt)
+            deg += step
 
         for tr in self.phases:
             pen = QPen(QColor(tr["colour"]))
@@ -1748,10 +1769,10 @@ class ChannelEditor(QWidget):
                 (p, TAB_ON) for p in self._crossover_partners()]:
             bqs = self._chain_biquads(chan, rate)
             out.append({
-                "degs": core.response_phase(
+                "degs": core.unwrap_deg(core.response_phase(
                     bqs, freqs, rate,
                     delay_ms=float(chan.get("delay", 0.0) or 0.0),
-                    invert=bool(chan.get("invert"))),
+                    invert=bool(chan.get("invert")))),
                 # Phase where a channel passes nothing is not wrong, it is
                 # meaningless, and drawing it fills the plot with sweeps
                 # through bands the driver never sees. Keep the part of each
@@ -1761,6 +1782,13 @@ class ChannelEditor(QWidget):
                 "colour": colour,
                 "label": chan.get("name", "?"),
             })
+        # With a partner in view, keep only where both are passing. Outside
+        # the overlap one driver is alone and its phase decides nothing, and
+        # the tweeter's own range is where the delay wraps hardest.
+        if len(out) > 1:
+            both = [all(t["mask"][i] for t in out) for i in range(len(freqs))]
+            for t in out:
+                t["mask"] = both
         return out
 
     @staticmethod
