@@ -1091,7 +1091,7 @@ class MainWindow(QMainWindow):
         self._gains_at_read: dict[int, float] = {}
 
         self.setWindowTitle("minidsp-gui")
-        self.resize(1560, 880)
+        self.resize(1560, 1020)
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -1156,6 +1156,10 @@ class MainWindow(QMainWindow):
 
         self.chan_list = QListWidget()
         self.chan_list.setFixedWidth(190)
+        # Rows carry a summary that can exceed the column; elide it rather
+        # than growing a horizontal scrollbar in a fixed-width panel.
+        self.chan_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.chan_list.setTextElideMode(Qt.ElideRight)
         self.chan_list.currentRowChanged.connect(self.on_select)
         splitter.addWidget(self.chan_list)
 
@@ -1268,11 +1272,11 @@ class MainWindow(QMainWindow):
             if not g.get("enabled"):
                 continue
             tag = "HP" if g.get("mode") == "highpass" else "LP"
-            bits.append(f"{tag} {g.get('freq', 0):.0f}")
+            bits.append(f"{tag}{g.get('freq', 0):.0f}")
         pq = core.count_effective_peq(out.get("peq", []))
         if pq:
-            bits.append(f"{pq} PEQ")
-        return " / ".join(bits) if bits else "unused"
+            bits.append(f"{pq}q")
+        return "/".join(bits) if bits else "unused"
 
     def _add_header(self, text: str):
         item = QListWidgetItem(text)
@@ -1296,7 +1300,7 @@ class MainWindow(QMainWindow):
         for i, inp in enumerate(self.project["inputs"]):
             pq = core.count_effective_peq(inp.get("peq", []))
             item = QListWidgetItem(
-                f"{inp['name']}      {pq} PEQ" if pq else inp["name"])
+                f"{inp['name']} · {pq}q" if pq else inp["name"])
             item.setData(Qt.UserRole, ("input", i))
             if inp.get("mute"):
                 item.setForeground(QColor(MUTED))
@@ -1305,7 +1309,7 @@ class MainWindow(QMainWindow):
         self._add_header("Outputs · crossover")
         for i, out in enumerate(self.project["outputs"]):
             summary = self._summarise_output(out)
-            item = QListWidgetItem(f"{out['name']}      {summary}")
+            item = QListWidgetItem(f"{out['name']} · {summary}")
             item.setData(Qt.UserRole, ("output", i))
             if out.get("mute") or summary == "unused":
                 item.setForeground(QColor(MUTED))
