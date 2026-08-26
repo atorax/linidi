@@ -708,21 +708,29 @@ class ChannelEditor(QWidget):
         self.legend.setObjectName("muted")
         root.addWidget(self.legend)
 
-        xo = QHBoxLayout()
+        # Crossover and routing live in the right-hand column, not here:
+        # vertical space is the scarce dimension on a widescreen display, and
+        # the plot and PEQ table are what actually benefit from height.
+        self.side = QWidget()
+        side_l = QVBoxLayout(self.side)
+        side_l.setContentsMargins(0, 0, 0, 0)
+
+        xo = QVBoxLayout()          # stacked, the side column is narrow
         self.xo_groups = [CrossoverGroup("Crossover group 1"),
                           CrossoverGroup("Crossover group 2")]
         for g in self.xo_groups:
             g.changed.connect(self._emit)
             xo.addWidget(g)
         self.xo_holder = QWidget(); self.xo_holder.setLayout(xo)
-        root.addWidget(self.xo_holder)
+        side_l.addWidget(self.xo_holder)
 
         self.routing_box = QGroupBox("Routing - outputs this input feeds")
         rl = QVBoxLayout(self.routing_box)
         self.routing = RoutingTable()
         self.routing.changed.connect(self._emit)
         rl.addWidget(self.routing)
-        root.addWidget(self.routing_box, 2)
+        side_l.addWidget(self.routing_box, 1)
+        side_l.addStretch(0)
 
         peq_box = QGroupBox("Parametric EQ")
         pl = QVBoxLayout(peq_box)
@@ -1075,7 +1083,7 @@ class MainWindow(QMainWindow):
         self._gains_at_read: dict[int, float] = {}
 
         self.setWindowTitle("minidsp-gui")
-        self.resize(1220, 840)
+        self.resize(1560, 880)
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -1148,19 +1156,24 @@ class MainWindow(QMainWindow):
         self.editor.navigate.connect(self.on_navigate)
         splitter.addWidget(self.editor)
 
-        meters = QWidget()
-        ml = QVBoxLayout(meters)
+        right = QWidget()
+        ml = QVBoxLayout(right)
         ml.setContentsMargins(8, 8, 8, 8)
-        ml.addWidget(QLabel("Inputs"))
+        levels = QGroupBox("Levels")
+        lv = QVBoxLayout(levels)
+        lab = QLabel("Inputs"); lab.setObjectName("muted")
+        lv.addWidget(lab)
         self.in_meters: list[MeterBar] = []
-        self.in_box = QVBoxLayout(); ml.addLayout(self.in_box)
-        ml.addSpacing(10)
-        ml.addWidget(QLabel("Outputs"))
+        self.in_box = QVBoxLayout(); lv.addLayout(self.in_box)
+        lv.addSpacing(8)
+        lab = QLabel("Outputs"); lab.setObjectName("muted")
+        lv.addWidget(lab)
         self.out_meters: list[MeterBar] = []
-        self.out_box = QVBoxLayout(); ml.addLayout(self.out_box)
-        ml.addStretch(1)
-        meters.setFixedWidth(210)
-        splitter.addWidget(meters)
+        self.out_box = QVBoxLayout(); lv.addLayout(self.out_box)
+        ml.addWidget(levels)
+        ml.addWidget(self.editor.side, 1)
+        right.setFixedWidth(360)
+        splitter.addWidget(right)
 
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, 1)
