@@ -744,7 +744,14 @@ class ChainBar(QWidget):
 
             label = st["label"]
             detail = st.get("detail")
-            btn = QPushButton(f"{label}   {detail}" if detail else label)
+            text = f"{label}   {detail}" if detail else label
+            btn = QPushButton(text)
+            # Fixed width per stage, measured from the widest value that stage
+            # can ever hold. Sizing to the current text makes the whole bar
+            # jump every time a number changes.
+            sizer = st.get("sizer") or text
+            fm = btn.fontMetrics()
+            btn.setFixedWidth(fm.horizontalAdvance(sizer) + 26)
             btn.setCursor(Qt.PointingHandCursor if st.get("target")
                           else Qt.ArrowCursor)
             btn.setFlat(True)
@@ -988,8 +995,24 @@ class ChannelEditor(QWidget):
             return
 
         name = self.chan.get("name", "")
-        outputs = (self.project or {}).get("outputs", [])
+        proj = self.project or {}
+        outputs = proj.get("outputs", [])
+        inputs = proj.get("inputs", [])
         stages: list[dict[str, Any]] = []
+
+        # Widest value each stage can take, so the row keeps its geometry as
+        # numbers change. Derived from the project rather than guessed, so a
+        # 10-output device or renamed channels still fit.
+        n_peq = len(self.chan.get("peq", [])) or 10
+        all_in = ", ".join(i.get("name", "In") for i in inputs) or "In 1"
+        all_out = ", ".join(o.get("name", "Out") for o in outputs) or "Out 1"
+        widest_name = max((c.get("name", "") for c in outputs + inputs),
+                          key=len, default="Out 8")
+        eq_sizer = "EQ   " + ", ".join([str(n_peq)] * max(1, len(inputs))) + " bands"
+        route_sizer = f"routing   {len(outputs) * max(1, len(inputs))} on"
+        xo_sizer = "crossover   HP 20000 / LP 20000"
+        peq_sizer = f"PEQ   {n_peq} bands"
+        out_sizer = "out   -127.00 dB \u00b7 99.99 ms \u00b7 inverted \u00b7 MUTED"
 
         if self.is_output:
             feeding = self._feeding_inputs()
@@ -997,6 +1020,7 @@ class ChannelEditor(QWidget):
                 first = feeding[0]
                 stages.append({
                     "label": ", ".join(i["name"] for i in feeding),
+                    "sizer": all_in,
                     "target": f"input:{first['index']}",
                     "tooltip": "Go to the input feeding this output",
                 })
@@ -1007,6 +1031,7 @@ class ChannelEditor(QWidget):
                 stages.append({
                     "label": "EQ",
                     "detail": f"{shown} bands" if shown else "flat",
+                    "sizer": eq_sizer,
                     "target": f"input:{first['index']}",
                     "tooltip": "Input EQ, applied before the crossover split",
                 })
@@ -1016,26 +1041,28 @@ class ChannelEditor(QWidget):
                 stages.append({
                     "label": "routing",
                     "detail": f"{enabled_routes} on",
+                    "sizer": route_sizer,
                     "target": f"input:{first['index']}",
                     "tooltip": "Which outputs each input feeds",
                 })
             else:
-                stages.append({"label": "no input routed",
+                stages.append({"label": "no input routed", "sizer": all_in,
                                "tooltip": "Nothing is routed to this output"})
 
-            stages.append({"label": name, "current": True})
+            stages.append({"label": name, "sizer": widest_name,
+                           "current": True})
 
             xo = [g for g in self.chan.get("crossover", []) if g.get("enabled")]
             xo_detail = " / ".join(
                 f"{'HP' if g['mode'] == 'highpass' else 'LP'} {g['freq']:.0f}"
                 for g in xo) or "off"
             stages.append({"label": "crossover", "detail": xo_detail,
-                           "target": "focus:crossover"})
+                           "sizer": xo_sizer, "target": "focus:crossover"})
 
             pq = core.count_effective_peq(self.chan.get("peq", []))
             stages.append({"label": "PEQ",
                            "detail": f"{pq} bands" if pq else "flat",
-                           "target": "focus:peq"})
+                           "sizer": peq_sizer, "target": "focus:peq"})
 
             bits = [f"{self.chan.get('gain', 0.0):+.2f} dB"]
             if self.chan.get("delay"):
@@ -1045,32 +1072,34 @@ class ChannelEditor(QWidget):
             if self.chan.get("mute"):
                 bits.append("MUTED")
             stages.append({"label": "out", "detail": " · ".join(bits),
-                           "target": "focus:basics"})
+                           "sizer": out_sizer, "target": "focus:basics"})
             stages.append({"label": "driver"})
         else:
             stages.append({"label": "source",
                            "tooltip": "Selected on the master strip above"})
-            stages.append({"label": name, "current": True})
+            stages.append({"label": name, "sizer": widest_name,
+                           "current": True})
 
             pq = core.count_effective_peq(self.chan.get("peq", []))
             stages.append({"label": "EQ",
                            "detail": f"{pq} bands" if pq else "flat",
-                           "target": "focus:peq"})
+                           "sizer": peq_sizer, "target": "focus:peq"})
 
             dests = [o for o in outputs
                      for r in self.chan.get("routing", [])
                      if r.get("index") == o.get("index") and r.get("enabled")]
             stages.append({"label": "routing",
                            "detail": f"{len(dests)} on",
-                           "target": "focus:routing"})
+                           "sizer": route_sizer, "target": "focus:routing"})
             if dests:
                 stages.append({
                     "label": ", ".join(o["name"] for o in dests),
+                    "sizer": all_out,
                     "target": f"output:{dests[0]['index']}",
                     "tooltip": "Go to the first output this input feeds",
                 })
             else:
-                stages.append({"label": "not routed"})
+                stages.append({"label": "not routed", "sizer": all_out})
             stages.append({"label": "driver"})
 
         self.chain.set_stages(stages)
