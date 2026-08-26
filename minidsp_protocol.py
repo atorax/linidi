@@ -201,7 +201,16 @@ class LibUsbTransport:
                 self._detached = True
         except (NotImplementedError, usb.core.USBError):
             pass
-        usb.util.claim_interface(self.dev, self.interface)
+        # Only one process can hold the control interface. Say so plainly
+        # rather than letting the caller block on a device that will never
+        # answer -- a second copy of the app is the usual cause.
+        try:
+            usb.util.claim_interface(self.dev, self.interface)
+        except usb.core.USBError as exc:
+            raise ProtocolError(
+                "the device is already in use by another program (another "
+                "copy of this app, or minidspd). Close it and try again. "
+                f"[{exc}]") from exc
 
     def write(self, data: bytes) -> None:
         pkt = bytes(data) + b"\x00" * (REPORT_LEN - len(data))
@@ -261,8 +270,15 @@ class MiniDSP:
         if transport is None:
             try:
                 transport = LibUsbTransport(product_id, timeout_ms)
-            except ProtocolError:
-                transport = HidRawTransport(timeout_ms=timeout_ms)
+            except ProtocolError as usb_exc:
+                # hidraw is a fallback for when libusb is unavailable, not an
+                # explanation for why libusb failed. If it cannot help either,
+                # report the original reason -- "already in use" is actionable,
+                # "no hidraw node" is not.
+                try:
+                    transport = HidRawTransport(timeout_ms=timeout_ms)
+                except ProtocolError:
+                    raise usb_exc from None
         self._t = transport
         self.timeout_ms = timeout_ms
 
@@ -290,6 +306,26 @@ class MiniDSP:
             return buf
         return buf[1:size]                              # drop size, keep body
 
+    def drain(self, limit: int = 8) -> int:
+        """Discard replies left over from earlier traffic.
+
+        The device answers on an interrupt endpoint that keeps queueing, so an
+        abandoned or late reply stays buffered and every subsequent read
+        returns the *previous* answer. Since replies echo only the command
+        byte, a stale one for a different address passes a naive check --
+        which shows up as values that are correct but belong to the request
+        before.
+        """
+        dropped = 0
+        for _ in range(limit):
+            try:
+                if not self._t.read(1):
+                    break
+            except Exception:                          # noqa: BLE001
+                break
+            dropped += 1
+        return dropped
+
     def command(self, cmd: int, args: Iterable[int] = ()) -> bytes:
         """Fire-and-acknowledge. Writes reply with an ack, not an echo of the
         command, so the reply is drained but not matched."""
@@ -297,13 +333,20 @@ class MiniDSP:
         try:
             return self.recv(timeout_ms=200)
         except ProtocolError:
+            # No ack arrived in time; make sure a late one cannot be mistaken
+            # for the answer to whatever is asked next.
+            self.drain(limit=2)
             return b""
 
     def exchange(self, cmd: int, args: Iterable[int] = (),
                  retries: int = 2) -> bytes:
         """Send a command and return the reply body, minus the size byte."""
+        expect = bytes(args)[:2] if cmd in (CMD_READ_FLASH,
+                                            CMD_READ_DSP_PARAM) else None
         last = None
-        for _ in range(retries + 1):
+        for attempt in range(retries + 1):
+            if attempt:
+                self.drain()
             self.send(cmd, args)
             try:
                 reply = self.recv()
@@ -311,11 +354,19 @@ class MiniDSP:
                 last = exc
                 continue
             if reply and reply[0] == cmd:
-                return reply
-            last = ProtocolError(
-                f"unexpected reply {reply[:4].hex() if reply else '(empty)'} "
-                f"to command {cmd:#04x}")
-            time.sleep(0.02)
+                # Reads echo the address; matching it rejects a stale reply
+                # that happens to share the command byte.
+                if expect is None or reply[1:3] == expect:
+                    return reply
+                last = ProtocolError(
+                    f"reply for {reply[1:3].hex()} while asking for "
+                    f"{expect.hex()} (stale packet)")
+            else:
+                last = ProtocolError(
+                    f"unexpected reply "
+                    f"{reply[:4].hex() if reply else '(empty)'} "
+                    f"to command {cmd:#04x}")
+            time.sleep(0.01)
         raise last or ProtocolError("no reply")
 
     # -- identity ---------------------------------------------------------

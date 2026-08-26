@@ -75,6 +75,11 @@ QPushButton#danger {{ background: {PANEL2}; color: {DANGER};
                       border: 1px solid {DANGER}; font-weight: 700;
                       letter-spacing: .04em; padding: 5px 12px; }}
 QPushButton#danger:hover {{ background: {DANGER}; color: #ffffff; }}
+QPushButton#danger[spent="true"] {{ background: {PANEL2}; color: {MUTED};
+                                    border-color: {LINE}; }}
+QPushButton#danger[spent="true"]:hover {{ background: {PANEL2};
+                                          color: {MUTED};
+                                          border-color: {MUTED}; }}
 QPushButton:checked {{ background: {WARN}; color: #201800; border-color: {WARN}; }}
 QComboBox, QDoubleSpinBox, QPlainTextEdit, QListWidget, QTableWidget {{
     background: {PANEL2}; border: 1px solid {LINE}; border-radius: 4px;
@@ -1172,8 +1177,22 @@ class MasterStrip(QFrame):
         if not self.volume.isSliderDown():
             self.volume.setValue(int(round(float(m.get("volume", 0.0)) * 10)))
             self._volume_preview(self.volume.value())
-        self.mute.setChecked(bool(m.get("mute")))
-        self._set_mute_icon(bool(m.get("mute")))
+        muted = bool(m.get("mute"))
+        self.mute.setChecked(muted)
+        self._set_mute_icon(muted)
+        # MUTE ALL sits next to a mute button that shows state, so a fixed
+        # struck-through glyph reads as a broken indicator rather than as an
+        # action. Reflect state instead: armed while sound is passing, and
+        # visibly spent once the device is already muted.
+        self.panic_btn.setIcon(speaker_icon(20, muted=True,
+                                            body=MUTED if muted else FG,
+                                            slash=MUTED if muted else DANGER))
+        self.panic_btn.setText("  MUTED" if muted else "  MUTE ALL")
+        self.panic_btn.setProperty("spent", muted)
+        self.panic_btn.setToolTip("Device is muted" if muted
+                                  else "Mute the device immediately")
+        self.panic_btn.style().unpolish(self.panic_btn)
+        self.panic_btn.style().polish(self.panic_btn)
 
         sources = status.get("available_sources") or []
         if not sources and self.source.count() == 0:
@@ -1269,28 +1288,35 @@ class MainWindow(QMainWindow):
         bar = QHBoxLayout()
         bar.setContentsMargins(10, 6, 10, 6)
         # Safe, frequently-used actions live together on the left.
-        self.read_btn = QPushButton("Read from device")
+        # One width across the row: these are equal in weight, and a ragged
+        # edge of differently sized buttons just reads as clutter.
+        BTN_W = 150
+        self.read_btn = QPushButton("Read Device")
         self.read_btn.setToolTip(
             "Read live coefficients off the hardware and load them here.\n"
             "This only reads; nothing is written.")
         self.read_btn.clicked.connect(self.on_read)
-        bar.addWidget(self.read_btn)
 
-        self.xml_btn = QPushButton("Import Device Console XML...")
+        self.xml_btn = QPushButton("Import XML")
         self.xml_btn.setToolTip(
             "Load a preset exported from miniDSP Device Console.\n"
-            "This is the only source of bypass state -- hardware readback\n"
-            "cannot tell an active filter from a bypassed one.")
+            "This is the only source of bypass state and PEQ contents --\n"
+            "the hardware reports neither.")
         self.xml_btn.clicked.connect(self.on_import_xml)
-        bar.addWidget(self.xml_btn)
 
-        self.rew_btn = QPushButton("Import REW...")
+        self.rew_btn = QPushButton("Import REW")
+        self.rew_btn.setToolTip("Load a REW biquad export into this channel.")
         self.rew_btn.clicked.connect(self.on_rew)
-        bar.addWidget(self.rew_btn)
 
-        for text, slot in (("Save project", self.on_save),
-                           ("Load project", self.on_load)):
-            b = QPushButton(text); b.clicked.connect(slot); bar.addWidget(b)
+        self.save_btn = QPushButton("Save project")
+        self.save_btn.clicked.connect(self.on_save)
+        self.load_btn = QPushButton("Load project")
+        self.load_btn.clicked.connect(self.on_load)
+
+        for b in (self.read_btn, self.xml_btn, self.rew_btn,
+                  self.save_btn, self.load_btn):
+            b.setFixedWidth(BTN_W)
+            bar.addWidget(b)
 
         bar.addStretch(1)
         bar.addWidget(self.warn_label)
