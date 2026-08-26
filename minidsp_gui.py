@@ -328,6 +328,8 @@ class CrossoverGroup(QGroupBox):
         lay.setContentsMargins(10, 6, 10, 8)
 
         self.enabled = QCheckBox("Enabled")
+        self.enabled.setTristate(True)
+        self.enabled.clicked.connect(self._enabled_clicked)
         self.enabled.toggled.connect(self._emit)
         lay.addWidget(self.enabled, 0, 0, 1, 2)
 
@@ -361,6 +363,14 @@ class CrossoverGroup(QGroupBox):
         self.note.setWordWrap(True)
         lay.addWidget(self.note, 5, 0, 1, 2)
         self._refresh_orders()
+
+    def _enabled_clicked(self, _checked=False):
+        """A click resolves an unknown bypass into a definite one."""
+        if self.enabled.checkState() == Qt.PartiallyChecked:
+            self.enabled.setCheckState(Qt.Checked)
+        self.enabled.setTristate(False)
+        self.enabled.setToolTip("")
+        self.data["bypass_known"] = True
 
     def _on_alignment(self, *_):
         self._refresh_orders()
@@ -402,7 +412,15 @@ class CrossoverGroup(QGroupBox):
     def load(self, group: dict[str, Any]):
         self._loading = True
         self.data = group
-        self.enabled.setChecked(bool(group.get("enabled")))
+        known = group.get("bypass_known", True)
+        self.enabled.setTristate(not known)
+        if known:
+            self.enabled.setCheckState(
+                Qt.Checked if group.get("enabled") else Qt.Unchecked)
+            self.enabled.setToolTip("")
+        else:
+            self.enabled.setCheckState(Qt.PartiallyChecked)
+            self.enabled.setToolTip("Bypass state is unknown: it was read from the hardware, which cannot report it.\nLeft untouched on Apply. Click to set it explicitly.")
         align = group.get("alignment", "linkwitz-riley")
         idx = self.alignment.findText(align)
         self.alignment.setCurrentIndex(max(0, idx))
@@ -418,7 +436,9 @@ class CrossoverGroup(QGroupBox):
         self._loading = False
 
     def store(self) -> dict[str, Any]:
-        self.data["enabled"] = self.enabled.isChecked()
+        if self.enabled.checkState() != Qt.PartiallyChecked:
+            self.data["enabled"] = self.enabled.isChecked()
+            self.data["bypass_known"] = True
         self.data["alignment"] = self.alignment.currentText()
         self.data["mode"] = self.mode.currentText()
         data = self.order.currentData()
@@ -448,7 +468,16 @@ class PeqTable(QTableWidget):
         self.setRowCount(len(bands))
         for r, b in enumerate(bands):
             on = QCheckBox()
-            on.setChecked(bool(b.get("enabled")))
+            known = b.get("bypass_known", True)
+            on.setTristate(not known)
+            if known:
+                on.setCheckState(
+                    Qt.Checked if b.get("enabled") else Qt.Unchecked)
+            else:
+                on.setCheckState(Qt.PartiallyChecked)
+                on.setToolTip("Bypass state is unknown: it was read from the hardware, which cannot report it.\nLeft untouched on Apply. Click to set it explicitly.")
+            on.clicked.connect(
+                lambda _c=False, cb=on: self._resolve(cb))
             on.toggled.connect(self._emit)
             holder = QWidget(); hl = QHBoxLayout(holder)
             hl.setContentsMargins(0, 0, 0, 0); hl.addWidget(on)
@@ -482,6 +511,14 @@ class PeqTable(QTableWidget):
             self.setItem(r, 5, src)
         self._loading = False
 
+    @staticmethod
+    def _resolve(cb):
+        """A click turns an unknown bypass into a definite one."""
+        if cb.checkState() == Qt.PartiallyChecked:
+            cb.setCheckState(Qt.Checked)
+        cb.setTristate(False)
+        cb.setToolTip("")
+
     def _emit(self, *_):
         if not self._loading:
             self.changed.emit()
@@ -489,7 +526,10 @@ class PeqTable(QTableWidget):
     def store(self) -> list[dict[str, Any]]:
         for r, b in enumerate(self.bands):
             holder = self.cellWidget(r, 0)
-            b["enabled"] = holder.findChild(QCheckBox).isChecked()
+            cb = holder.findChild(QCheckBox)
+            if cb.checkState() != Qt.PartiallyChecked:
+                b["enabled"] = cb.isChecked()
+                b["bypass_known"] = True
             if b.get("manual") is None:
                 b["type"] = self.cellWidget(r, 1).currentText()
                 b["freq"] = self.cellWidget(r, 2).value()

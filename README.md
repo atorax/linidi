@@ -189,6 +189,12 @@ Things that cost real debugging time:
 
 ### On bypass
 
+Filters read from the hardware show an **indeterminate** enable box, and Apply
+omits the `bypass` field for them entirely, so the device keeps whatever it
+already had. Clicking the box resolves it into a definite state that will be
+written. This matters: a filter can sit on the device fully configured but
+bypassed, and writing a guessed `bypass: false` would switch it on.
+
 Bypass is set by command `0x19` and has no readable address — the device
 profile has `_STATUS` symbols for `COMP`, `DGain`, `FIR` and `Mixer`, but none
 for `PEQ` or `BPF`. Coefficients also survive being bypassed, so a dormant

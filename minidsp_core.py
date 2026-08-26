@@ -606,13 +606,14 @@ class Readback:
 
 def default_peq_band(index: int) -> dict[str, Any]:
     return {"index": index, "enabled": False, "type": "peaking",
-            "freq": 1000.0, "q": 1.0, "gain": 0.0, "manual": None}
+            "freq": 1000.0, "q": 1.0, "gain": 0.0, "manual": None,
+            "bypass_known": True}
 
 
 def default_crossover_group(index: int, mode: str) -> dict[str, Any]:
     return {"index": index, "enabled": False, "mode": mode,
             "alignment": "linkwitz-riley", "order": 4, "freq": 80.0,
-            "manual": None}
+            "manual": None, "bypass_known": True}
 
 
 def default_output(index: int, n_peq: int) -> dict[str, Any]:
@@ -715,6 +716,30 @@ def crossover_coeffs(group: dict[str, Any], rate: int,
     return designed
 
 
+def _bypass_field(entry: dict[str, Any]) -> dict[str, Any]:
+    """The bypass key for a payload entry, or nothing if it is unknown.
+
+    Hardware readback cannot recover bypass state -- it has no readable
+    address -- so a filter read off the device has coefficients but no idea
+    whether it is in circuit. `bypass` is optional in minidspd's API and only
+    fields that are present cause a change, so omitting it leaves the device's
+    own setting alone. Writing a guess here would silently switch filters on.
+    """
+    if entry.get("bypass_known", True):
+        return {"bypass": not entry.get("enabled", False)}
+    return {}
+
+
+def _peq_entry(band: dict[str, Any], rate: int) -> dict[str, Any]:
+    return {"index": band["index"], "coeff": peq_coeff(band, rate),
+            **_bypass_field(band)}
+
+
+def _crossover_entry(group: dict[str, Any], rate: int) -> dict[str, Any]:
+    return {"index": group["index"], "coeff": crossover_coeffs(group, rate),
+            **_bypass_field(group)}
+
+
 def build_config_payload(project: dict[str, Any]) -> dict[str, Any]:
     """Whole project -> one minidspd `POST /devices/N/config` body.
 
@@ -737,15 +762,9 @@ def build_config_payload(project: dict[str, Any]) -> dict[str, Any]:
             "mute": bool(out["mute"]),
             "invert": bool(out.get("invert", False)),
             "delay": ms_to_duration(out.get("delay", 0.0)),
-            "peq": [{"index": b["index"],
-                     "bypass": not b.get("enabled", False),
-                     "coeff": peq_coeff(b, rate)} for b in out["peq"]],
-            "crossover": [
-                {"index": g["index"],
-                 "bypass": not g.get("enabled", False),
-                 "coeff": crossover_coeffs(g, rate)}
-                for g in out.get("crossover", [])
-            ],
+            "peq": [_peq_entry(b, rate) for b in out["peq"]],
+            "crossover": [_crossover_entry(g, rate)
+                          for g in out.get("crossover", [])],
         }
         outputs.append(entry)
 
@@ -755,9 +774,7 @@ def build_config_payload(project: dict[str, Any]) -> dict[str, Any]:
             "index": inp["index"],
             "gain": float(inp["gain"]),
             "mute": bool(inp["mute"]),
-            "peq": [{"index": b["index"],
-                     "bypass": not b.get("enabled", False),
-                     "coeff": peq_coeff(b, rate)} for b in inp["peq"]],
+            "peq": [_peq_entry(b, rate) for b in inp["peq"]],
             "routing": [{"index": r["index"], "enabled": bool(r["enabled"]),
                          "gain": float(r.get("gain", 0.0))}
                         for r in inp.get("routing", [])],
@@ -787,6 +804,9 @@ def apply_readback(project: dict[str, Any],
             if gi >= len(out["crossover"]):
                 break
             dst = out["crossover"][gi]
+            # Coefficients are readable; bypass is not. Flag it so the write
+            # path leaves the device's own bypass setting untouched.
+            dst["bypass_known"] = False
             dst["enabled"] = bool(g.get("active"))
             if not g.get("active"):
                 dst["manual"] = None
@@ -803,6 +823,7 @@ def apply_readback(project: dict[str, Any],
             if slot >= len(out["peq"]):
                 break
             dst = out["peq"][slot]
+            dst["bypass_known"] = False
             if not band.get("active"):
                 dst["enabled"] = False
                 dst["manual"] = None
@@ -928,6 +949,7 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
             stats["crossover"] += 1
             if f["bypass"]:
                 stats["bypassed"] += 1
+            dst["bypass_known"] = True
             dst["enabled"] = not f["bypass"]
             dst["manual"] = None
             if "mode" in f:
@@ -946,6 +968,7 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
             stats["peq"] += 1
             if f["bypass"]:
                 stats["bypassed"] += 1
+            dst["bypass_known"] = True
             dst["enabled"] = not f["bypass"]
             dst["manual"] = None
             kind = _XML_PEQ_TYPES.get(f["type"])
@@ -983,6 +1006,7 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
             if not f:
                 continue
             dst = inp["peq"][slot]
+            dst["bypass_known"] = True
             dst["enabled"] = not f["bypass"]
             dst["manual"] = None
             kind = _XML_PEQ_TYPES.get(f["type"])
