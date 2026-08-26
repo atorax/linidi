@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSlider,
-    QSplitter, QStatusBar, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QStatusBar, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
 
@@ -53,6 +53,71 @@ OK      = "#3fb950"
 WARN    = "#d29922"
 DANGER  = "#f0533f"
 
+# One colour per PEQ band, so a band's row in the table, its own curve on the
+# plot and the marker sitting on that curve are all obviously the same filter.
+# Hues are spread rather than pretty: ten of these are on screen at once and
+# the only thing that matters is telling them apart.
+PEQ_COLOURS = [
+    "#4f9cf9",  # blue
+    "#f0533f",  # red
+    "#3fb950",  # green
+    "#d29922",  # amber
+    "#a371f7",  # purple
+    "#2dd4bf",  # teal
+    "#f778ba",  # pink
+    "#ff9f4a",  # orange
+    "#9ad14b",  # lime
+    "#7f8ea8",  # slate
+]
+
+
+def peq_colour(index: int) -> str:
+    """Colour for band `index`, wrapping if a device has more bands than hues."""
+    return PEQ_COLOURS[index % len(PEQ_COLOURS)]
+
+
+def _readable_on(colour: QColor) -> QColor:
+    """Black or white, whichever stays legible on `colour`."""
+    lum = (0.299 * colour.red() + 0.587 * colour.green()
+           + 0.114 * colour.blue())
+    return QColor("#12141a") if lum > 140 else QColor("#ffffff")
+
+
+def peq_badge(index: int, size: int = 20, active: bool = True) -> QPixmap:
+    """A numbered disc identifying one PEQ band.
+
+    A band that is switched off is drawn hollow rather than in its colour, so
+    the column doubles as a legend: filled discs are the filters actually in
+    circuit, and you can see which at a glance without reading the checkboxes.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    colour = QColor(peq_colour(index))
+    r = QRectF(1.0, 1.0, size - 2.0, size - 2.0)
+    if active:
+        p.setBrush(colour)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(r)
+        p.setPen(_readable_on(colour))
+    else:
+        dim = QColor(colour)
+        dim.setAlpha(90)
+        p.setBrush(Qt.NoBrush)
+        pen = QPen(dim); pen.setWidthF(1.4)
+        p.setPen(pen)
+        p.drawEllipse(r)
+        p.setPen(QColor(MUTED))
+    f = QFont()
+    f.setPointSizeF(max(7.0, size * 0.5))
+    f.setBold(active)
+    p.setFont(f)
+    p.drawText(pm.rect(), Qt.AlignCenter, str(index))
+    p.end()
+    return pm
+
+
 # Vertical padding on a list item. Rows that hold a widget have to add this to
 # their size hint, so both sides read it from here rather than from a literal
 # in the stylesheet that nothing else can see.
@@ -66,7 +131,6 @@ STYLE = f"""
 QWidget {{ color: {FG}; font-family: system-ui, sans-serif; font-size: 13px; }}
 QMainWindow, QDialog {{ background: {BG}; }}
 QLabel, QCheckBox, QGroupBox::title {{ background: transparent; }}
-QSplitter {{ background: transparent; }}
 QGroupBox {{ background: {PANEL}; border: 1px solid {LINE};
              border-radius: 6px; margin-top: 14px; padding-top: 6px; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px;
@@ -364,11 +428,21 @@ class ResponsePlot(QWidget):
     def __init__(self):
         super().__init__()
         self.curves: list[tuple[list[float], list[float], str, bool]] = []
+        self.bands: list[dict[str, Any]] = []
         self.freqs = core.log_freqs(280)
         self.setMinimumHeight(200)
 
     def set_curves(self, curves):
         self.curves = curves
+        self.update()
+
+    def set_bands(self, bands):
+        """Individual PEQ curves, each tagged with its band number.
+
+        Each entry is {index, colour, dbs, mark_f, mark_db}: the band's own
+        response across the plot's frequencies, and where to put its marker.
+        """
+        self.bands = bands
         self.update()
 
     def _fx(self, f, w):
@@ -423,6 +497,15 @@ class ResponsePlot(QWidget):
         y0 = self._fy(0.0, h)
         p.drawLine(QPointF(0, y0), QPointF(w, y0))
 
+        # Individual bands sit under the summed response: they are context for
+        # it, and a 2px sum drawn over them stays the thing you read first.
+        for band in self.bands:
+            colour = QColor(band["colour"])
+            colour.setAlpha(170)
+            pen = QPen(colour); pen.setWidth(1)
+            p.setPen(pen)
+            p.drawPath(self._trace(band["dbs"], w, h))
+
         for freqs, dbs, colour, dashed in self.curves:
             pen = QPen(QColor(colour))
             pen.setWidth(2)
@@ -434,19 +517,61 @@ class ResponsePlot(QWidget):
             # it: a clamped curve draws a flat line along the bottom edge,
             # which reads as a response that is there rather than one that has
             # gone off-scale.
-            path = QPainterPath()
-            drawing = False
-            for f, db in zip(freqs, dbs):
-                if self.DB_MIN <= db <= self.DB_MAX:
-                    pt = QPointF(self._fx(f, w), self._fy(db, h))
-                    if drawing:
-                        path.lineTo(pt)
-                    else:
-                        path.moveTo(pt)
-                        drawing = True
+            p.drawPath(self._trace(dbs, w, h))
+
+        self._draw_markers(p, w, h)
+
+    def _trace(self, dbs, w, h) -> QPainterPath:
+        """A curve, broken wherever it leaves the window.
+
+        Clamping instead would draw a flat line along the bottom edge, which
+        reads as a response that is there rather than one that has gone
+        off-scale.
+        """
+        path = QPainterPath()
+        drawing = False
+        for f, db in zip(self.freqs, dbs):
+            if self.DB_MIN <= db <= self.DB_MAX:
+                pt = QPointF(self._fx(f, w), self._fy(db, h))
+                if drawing:
+                    path.lineTo(pt)
                 else:
-                    drawing = False
-            p.drawPath(path)
+                    path.moveTo(pt)
+                    drawing = True
+            else:
+                drawing = False
+        return path
+
+    def _draw_markers(self, p: QPainter, w: int, h: int):
+        """Numbered discs pinning each band to its place on the plot."""
+        if not self.bands:
+            return
+        r = 8.0
+        font = QFont()
+        font.setPointSizeF(8.0)
+        font.setBold(True)
+        p.setFont(font)
+        placed: list[QPointF] = []
+        for band in self.bands:
+            x = self._fx(max(20.0, min(20000.0, band["mark_f"])), w)
+            y = self._fy(band["mark_db"], h)
+            # Keep the disc inside the plot even when its band runs off the
+            # top or bottom, and nudge it clear of one already drawn in the
+            # same spot so two filters at one frequency stay countable.
+            y = max(r + 1, min(h - r - 1, y))
+            for prev in placed:
+                if abs(prev.x() - x) < 2 * r and abs(prev.y() - y) < 2 * r:
+                    y = max(r + 1, min(h - r - 1, prev.y() - 2 * r - 1))
+            pt = QPointF(x, y)
+            placed.append(pt)
+
+            colour = QColor(band["colour"])
+            p.setPen(QPen(QColor(BG), 2))
+            p.setBrush(colour)
+            p.drawEllipse(pt, r, r)
+            p.setPen(_readable_on(colour))
+            p.drawText(QRectF(x - r, y - r, 2 * r, 2 * r),
+                       Qt.AlignCenter, str(band["index"]))
 
 
 class CrossoverGroup(QGroupBox):
@@ -584,13 +709,19 @@ class PeqTable(QTableWidget):
     """Editor for a channel's PEQ bank."""
 
     changed = Signal()
-    COLS = ["On", "Type", "Freq (Hz)", "Q", "Gain (dB)", "Source"]
+    COLS = ["#", "On", "Type", "Freq (Hz)", "Q", "Gain (dB)", "Source"]
+    C_NUM, C_ON, C_TYPE, C_FREQ, C_Q, C_GAIN, C_SRC = range(len(COLS))
 
     def __init__(self):
         super().__init__(0, len(self.COLS))
         self.setHorizontalHeaderLabels(self.COLS)
         self.verticalHeader().setVisible(False)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        # The badge column holds one glyph and should not share in the width.
+        header.setSectionResizeMode(self.C_NUM, QHeaderView.Fixed)
+        header.setMinimumSectionSize(26)      # else the header text sets a floor
+        self.setColumnWidth(self.C_NUM, 34)
         self.setSelectionMode(QTableWidget.NoSelection)
         self.bands: list[dict[str, Any]] = []
         self._loading = False
@@ -600,6 +731,16 @@ class PeqTable(QTableWidget):
         self.bands = bands
         self.setRowCount(len(bands))
         for r, b in enumerate(bands):
+            idx = b.get("index", r)
+            badge = QLabel()
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setPixmap(peq_badge(idx, 20, bool(b.get("enabled"))))
+            badge.setToolTip(
+                f"Band {idx}"
+                + ("" if b.get("enabled") else " - switched off, so it is not "
+                   "drawn on the response"))
+            self.setCellWidget(r, self.C_NUM, badge)
+
             on = QCheckBox()
             known = b.get("bypass_source", "default") != "unknown"
             on.setTristate(not known)
@@ -611,11 +752,12 @@ class PeqTable(QTableWidget):
                 on.setToolTip("Bypass state is unknown: it was read from the hardware, which cannot report it.\nLeft untouched on Apply. Click to set it explicitly.")
             on.clicked.connect(
                 lambda _c=False, cb=on: self._resolve(cb))
+            on.toggled.connect(lambda _c, row=r: self._sync_badge(row))
             on.toggled.connect(self._emit)
             holder = QWidget(); hl = QHBoxLayout(holder)
             hl.setContentsMargins(0, 0, 0, 0); hl.addWidget(on)
             hl.setAlignment(Qt.AlignCenter)
-            self.setCellWidget(r, 0, holder)
+            self.setCellWidget(r, self.C_ON, holder)
 
             manual = b.get("manual") is not None
 
@@ -624,12 +766,12 @@ class PeqTable(QTableWidget):
             kind.setCurrentIndex(max(0, i))
             kind.setEnabled(not manual)
             kind.currentTextChanged.connect(self._emit)
-            self.setCellWidget(r, 1, kind)
+            self.setCellWidget(r, self.C_TYPE, kind)
 
             for col, key, lo, hi, dec, step in [
-                (2, "freq", 10.0, 24000.0, 1, 10.0),
-                (3, "q", 0.1, 20.0, 3, 0.1),
-                (4, "gain", -24.0, 24.0, 2, 0.5),
+                (self.C_FREQ, "freq", 10.0, 24000.0, 1, 10.0),
+                (self.C_Q, "q", 0.1, 20.0, 3, 0.1),
+                (self.C_GAIN, "gain", -24.0, 24.0, 2, 0.5),
             ]:
                 sb = QDoubleSpinBox()
                 sb.setRange(lo, hi); sb.setDecimals(dec); sb.setSingleStep(step)
@@ -660,8 +802,20 @@ class PeqTable(QTableWidget):
             src.setForeground(QColor(colour))
             src.setToolTip(tip)
             src.setFlags(Qt.ItemIsEnabled)
-            self.setItem(r, 5, src)
+            self.setItem(r, self.C_SRC, src)
         self._loading = False
+
+    def _sync_badge(self, r: int):
+        """Fill or hollow a badge as its band is switched on or off."""
+        if r >= len(self.bands):
+            return
+        b = self.bands[r]
+        holder = self.cellWidget(r, self.C_ON)
+        badge = self.cellWidget(r, self.C_NUM)
+        if holder is None or badge is None:
+            return
+        active = holder.findChild(QCheckBox).checkState() == Qt.Checked
+        badge.setPixmap(peq_badge(b.get("index", r), 20, active))
 
     @staticmethod
     def _resolve(cb):
@@ -677,16 +831,16 @@ class PeqTable(QTableWidget):
 
     def store(self) -> list[dict[str, Any]]:
         for r, b in enumerate(self.bands):
-            holder = self.cellWidget(r, 0)
+            holder = self.cellWidget(r, self.C_ON)
             cb = holder.findChild(QCheckBox)
             if cb.checkState() != Qt.PartiallyChecked:
                 b["enabled"] = cb.isChecked()
                 b["bypass_source"] = "user"
             if b.get("manual") is None:
-                b["type"] = self.cellWidget(r, 1).currentText()
-                b["freq"] = self.cellWidget(r, 2).value()
-                b["q"] = self.cellWidget(r, 3).value()
-                b["gain"] = self.cellWidget(r, 4).value()
+                b["type"] = self.cellWidget(r, self.C_TYPE).currentText()
+                b["freq"] = self.cellWidget(r, self.C_FREQ).value()
+                b["q"] = self.cellWidget(r, self.C_Q).value()
+                b["gain"] = self.cellWidget(r, self.C_GAIN).value()
         return self.bands
 
 
@@ -1261,6 +1415,7 @@ class ChannelEditor(QWidget):
                                    core.response_db(upstream + own, freqs, rate),
                                    WARN, True))
             self.plot.set_curves(curves)
+            self.plot.set_bands(self._band_curves(freqs, rate))
 
             if not self.is_output:
                 self.legend.setText(
@@ -1274,7 +1429,38 @@ class ChannelEditor(QWidget):
                 self.legend.setText("solid: this output's own chain")
         except Exception:                                # noqa: BLE001
             self.plot.set_curves([])
+            self.plot.set_bands([])
             self.legend.setText("")
+
+    def _band_curves(self, freqs, rate: int) -> list[dict[str, Any]]:
+        """Each PEQ band on its own, so a filter can be found on the plot.
+
+        Only bands that are switched on: a bypassed one is a flat line at
+        0 dB, and ten of those stacked on the zero rule with markers on top
+        would bury the bands that are doing something.
+        """
+        out = []
+        for r, b in enumerate(self.chan.get("peq", [])):
+            if not b.get("enabled"):
+                continue
+            bq = core.peq_biquad(b, rate)
+            if core.is_bypass(bq):
+                continue
+            dbs = core.response_db([bq], freqs, rate)
+            idx = b.get("index", r)
+            f0 = float(b.get("freq", 1000.0))
+            # Mark the band at its own corner, on its own curve, rather than
+            # at its nominal gain: for a shelf or a pass filter those are not
+            # the same point, and the marker has to sit on the line it labels.
+            nearest = min(range(len(freqs)), key=lambda i: abs(freqs[i] - f0))
+            out.append({
+                "index": idx,
+                "colour": peq_colour(idx),
+                "dbs": dbs,
+                "mark_f": f0,
+                "mark_db": dbs[nearest],
+            })
+        return out
 
 
 class MasterStrip(QFrame):
@@ -1518,19 +1704,27 @@ class MainWindow(QMainWindow):
         holder = QWidget(); holder.setLayout(bar)
         root.addWidget(holder)
 
-        splitter = QSplitter(Qt.Horizontal)
+        # Both side columns are a fixed width and only the editor stretches,
+        # so there is nothing for a splitter to split. It also had a bug in
+        # it: given slack, it grew the navigator's slot past the width the
+        # list is allowed to be, and the leftover showed as a gap that came
+        # and went depending on whether the selected channel's editor asked
+        # for more room. A plain row cannot do that.
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
 
         self.chan_list = QListWidget()
         self.chan_list.setFixedWidth(190)
         self.chan_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.chan_list.setTextElideMode(Qt.ElideRight)
         self.chan_list.currentRowChanged.connect(self.on_select)
-        splitter.addWidget(self.chan_list)
+        body.addWidget(self.chan_list)
 
         self.editor = ChannelEditor()
         self.editor.changed.connect(self.on_edit)
         self.editor.navigate.connect(self.on_navigate)
-        splitter.addWidget(self.editor)
+        body.addWidget(self.editor, 1)
 
         right = QWidget()
         ml = QVBoxLayout(right)
@@ -1549,10 +1743,10 @@ class MainWindow(QMainWindow):
         ml.addWidget(levels)
         ml.addWidget(self.editor.side, 1)
         right.setFixedWidth(286)
-        splitter.addWidget(right)
+        body.addWidget(right)
 
-        splitter.setStretchFactor(1, 1)
-        root.addWidget(splitter, 1)
+        holder2 = QWidget(); holder2.setLayout(body)
+        root.addWidget(holder2, 1)
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
 
