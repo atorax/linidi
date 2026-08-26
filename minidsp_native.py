@@ -20,13 +20,13 @@ License: Apache-2.0
 
 from __future__ import annotations
 
-import struct
 import threading
 from typing import Any
 
 import minidsp_protocol as mp
-from minidsp_core import (BYPASS, AddressMap, classify_biquad, decode_biquad,
-                          decode_peq, identify_alignment)
+from minidsp_core import (AddressMap, as_biquad,
+                          describe_crossover_group, describe_peq_band,
+                          delay_ms_from_raw)
 
 # (hw_id, dsp_version) -> address map name.
 #
@@ -161,7 +161,7 @@ class NativeDevice:
                 out["gain"] = round(self._dev.read_floats(spec["gain"], 1)[0], 3)
             if "delay" in spec:
                 raw = self._dev.read_floats(spec["delay"], 1)[0]
-                out["delay"] = round(_delay_ms(raw, self.rate), 4)
+                out["delay"] = round(delay_ms_from_raw(raw, self.rate), 4)
             if "enable" in spec:
                 _set_gate(out, self._dev.read_ints(spec["enable"], 1)[0])
             if "invert" in spec:
@@ -171,10 +171,10 @@ class NativeDevice:
             xo_blocks = {a: self._floats(a, 20)
                          for a in spec.get("xover_groups", [])}
 
-        out["peq"] = [_describe_peq(_as_biquad(peq_blocks[a]), i, self.rate)
+        out["peq"] = [describe_peq_band(as_biquad(peq_blocks[a]), i, self.rate)
                       for i, a in enumerate(peq_addrs)]
         out["crossover"] = [
-            _describe_group([_as_biquad(xo_blocks[a][k * 5:(k + 1) * 5])
+            describe_crossover_group([as_biquad(xo_blocks[a][k * 5:(k + 1) * 5])
                              for k in range(4)], gi, self.rate)
             for gi, a in enumerate(spec.get("xover_groups", []))
         ]
@@ -190,7 +190,7 @@ class NativeDevice:
                 _set_gate(out, self._dev.read_ints(spec["enable"], 1)[0])
             peq_addrs = spec.get("peq", [])
             blocks = {a: self._dev.read_floats(a, 5) for a in peq_addrs}
-        out["peq"] = [_describe_peq(_as_biquad(blocks[a]), i, self.rate)
+        out["peq"] = [describe_peq_band(as_biquad(blocks[a]), i, self.rate)
                       for i, a in enumerate(peq_addrs)]
         return out
 
@@ -340,31 +340,8 @@ def _mixer_status_addr(amap: AddressMap, in_idx: int, out_idx: int) -> int:
     return in_idx * len(amap.outputs) + out_idx
 
 
-def _as_biquad(vals: list[float]) -> dict[str, float]:
-    if len(vals) < 5:
-        return dict(BYPASS)
-    b0, b1, b2, a1, a2 = vals[:5]
-    return {"b0": b0, "b1": b1, "b2": b2, "a1": a1, "a2": a2}
-
-
 def _coeff_list(coeff: dict[str, float]) -> list[float]:
     return [float(coeff.get(k, 0.0)) for k in ("b0", "b1", "b2", "a1", "a2")]
-
-
-# No miniDSP offers anything close to ten seconds of delay, so a sample count
-# beyond this is a misread rather than a very long delay -- an address that
-# holds something other than a delay, or a reply that arrived for a different
-# one. Reporting zero is safer than reporting nonsense the UI would then draw.
-MAX_DELAY_SAMPLES = 1_000_000
-
-
-def _delay_ms(raw: float, rate: int) -> float:
-    """Delay is a sample count living in the float's bit pattern."""
-    try:
-        samples = struct.unpack("<I", struct.pack("<f", raw))[0]
-    except (struct.error, OverflowError):
-        return 0.0
-    return 0.0 if samples > MAX_DELAY_SAMPLES else samples * 1000.0 / rate
 
 
 def _delay_samples(value: Any, rate: int) -> int:
@@ -379,36 +356,3 @@ def _delay_samples(value: Any, rate: int) -> int:
     else:
         ms = float(value)
     return max(0, int(round(ms * rate / 1000.0)))
-
-
-def _describe_peq(bq: dict[str, float], slot: int, rate: int) -> dict[str, Any]:
-    kind = classify_biquad(bq)
-    entry: dict[str, Any] = {"index": slot, "coeff": bq, "shape": kind,
-                             "active": kind not in ("bypass", "unknown")}
-    d = decode_peq(bq, rate)
-    if d:
-        entry["type"], entry["freq"], entry["q"], entry["gain"] = d
-    return entry
-
-
-def _describe_group(bqs: list[dict[str, float]], gi: int,
-                    rate: int) -> dict[str, Any]:
-    sections, shapes = [], []
-    for bq in bqs:
-        kind = classify_biquad(bq)
-        if kind in ("lowpass", "highpass"):
-            d = decode_biquad(bq, rate)
-            if d:
-                sections.append(d)
-                shapes.append(kind)
-    entry: dict[str, Any] = {"index": gi, "coeff": bqs,
-                             "sections": len(sections),
-                             "active": bool(sections)}
-    if sections:
-        alignment, order = identify_alignment(sections)
-        entry["mode"] = max(set(shapes), key=shapes.count)
-        entry["alignment"] = alignment
-        entry["order"] = order
-        entry["freq"] = round(sum(f for f, _ in sections) / len(sections), 1)
-        entry["qs"] = [None if q is None else round(q, 4) for _, q in sections]
-    return entry

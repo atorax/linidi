@@ -476,6 +476,81 @@ class AddressMap:
 
 
 # ---------------------------------------------------------------------------
+# Describing what was read
+# ---------------------------------------------------------------------------
+#
+# Both transports -- direct USB and the minidspd fallback -- turn raw floats
+# into the same band and group descriptions, so the code that does it lives
+# here rather than once in each. They had drifted: the daemon path recovered
+# only frequency and Q, the USB path the full type and gain as well, so the
+# same device described its own filters differently depending on how it was
+# reached.
+
+# No miniDSP offers anything near ten seconds of delay, so a sample count past
+# this is a misread rather than a very long delay. Reporting zero beats
+# reporting nonsense the UI would then draw.
+MAX_DELAY_SAMPLES = 1_000_000
+
+
+def delay_ms_from_raw(raw: float, rate: int) -> float:
+    """Delay is a sample count living in the float's bit pattern."""
+    try:
+        samples = struct.unpack("<I", struct.pack("<f", raw))[0]
+    except (struct.error, OverflowError):
+        return 0.0
+    return 0.0 if samples > MAX_DELAY_SAMPLES else samples * 1000.0 / rate
+
+
+def as_biquad(vals: list[float]) -> dict[str, float]:
+    """Five consecutive floats as a section, or a passthrough if short."""
+    if len(vals) < 5:
+        return dict(BYPASS)
+    b0, b1, b2, a1, a2 = vals[:5]
+    return {"b0": b0, "b1": b1, "b2": b2, "a1": a1, "a2": a2}
+
+
+def describe_peq_band(bq: dict[str, float], slot: int,
+                      rate: int) -> dict[str, Any]:
+    """One PEQ slot as the project model wants it.
+
+    The decoded type, frequency, Q and gain are added only when the section
+    really is one the app can express that way; decode_peq checks its own
+    answer, so anything else stays as coefficients.
+    """
+    kind = classify_biquad(bq)
+    entry: dict[str, Any] = {"index": slot, "coeff": bq, "shape": kind,
+                             "active": kind not in ("bypass", "unknown")}
+    decoded = decode_peq(bq, rate)
+    if decoded:
+        entry["type"], entry["freq"], entry["q"], entry["gain"] = decoded
+    return entry
+
+
+def describe_crossover_group(bqs: list[dict[str, float]], index: int,
+                             rate: int) -> dict[str, Any]:
+    """One crossover group: which sections are real, and what they add up to."""
+    sections, shapes = [], []
+    for bq in bqs:
+        kind = classify_biquad(bq)
+        if kind in ("lowpass", "highpass"):
+            decoded = decode_biquad(bq, rate)
+            if decoded:
+                sections.append(decoded)
+                shapes.append(kind)
+    entry: dict[str, Any] = {"index": index, "coeff": bqs,
+                             "sections": len(sections),
+                             "active": bool(sections)}
+    if sections:
+        alignment, order = identify_alignment(sections)
+        entry["mode"] = max(set(shapes), key=shapes.count)
+        entry["alignment"] = alignment
+        entry["order"] = order
+        entry["freq"] = round(sum(f for f, _ in sections) / len(sections), 1)
+        entry["qs"] = [None if q is None else round(q, 4) for _, q in sections]
+    return entry
+
+
+# ---------------------------------------------------------------------------
 # Device I/O
 # ---------------------------------------------------------------------------
 
@@ -595,17 +670,6 @@ class Readback:
             out.append({"b0": b0, "b1": b1, "b2": b2, "a1": a1, "a2": a2})
         return out
 
-    @staticmethod
-    def _delay_ms(raw: float, rate: int) -> float:
-        """Delay is a sample count stored in the float's bit pattern."""
-        try:
-            samples = struct.unpack("<I", struct.pack("<f", raw))[0]
-        except (struct.error, OverflowError):
-            return 0.0
-        if samples > 1_000_000:          # not a plausible sample count
-            return 0.0
-        return samples * 1000.0 / rate
-
     def read_output(self, index: int) -> dict[str, Any]:
         spec = self.amap.outputs[index]
         rate = self.amap.rate
@@ -614,7 +678,7 @@ class Readback:
         if "gain" in spec:
             out["gain"] = round(self.floats(spec["gain"], 1)[0], 3)
         if "delay" in spec:
-            out["delay"] = round(self._delay_ms(
+            out["delay"] = round(delay_ms_from_raw(
                 self.floats(spec["delay"], 1)[0], rate), 4)
 
         peq_addrs = spec.get("peq", [])
@@ -625,57 +689,17 @@ class Readback:
             for slot, addr in enumerate(peq_addrs):
                 off = addr - lo
                 coeff = self._biquads(block[off:off + 5])
-                peq.append(self._describe(coeff[0] if coeff else dict(BYPASS),
-                                          slot, rate))
+                peq.append(describe_peq_band(
+                    coeff[0] if coeff else dict(BYPASS), slot, rate))
         out["peq"] = peq
 
         groups = []
         for gi, base in enumerate(spec.get("xover_groups", [])):
             block = self.floats(base, 20)
             bqs = self._biquads(block)
-            groups.append(self._describe_group(bqs, gi, rate))
+            groups.append(describe_crossover_group(bqs, gi, rate))
         out["crossover"] = groups
         return out
-
-    @staticmethod
-    def _describe(bq: dict[str, float], slot: int, rate: int) -> dict[str, Any]:
-        kind = classify_biquad(bq)
-        entry: dict[str, Any] = {
-            "index": slot, "coeff": bq, "shape": kind,
-            "active": kind not in ("bypass", "unknown"),
-        }
-        d = decode_biquad(bq, rate)
-        if d:
-            entry["freq"] = round(d[0], 1)
-            entry["q"] = None if d[1] is None else round(d[1], 4)
-        return entry
-
-    @staticmethod
-    def _describe_group(bqs: list[dict[str, float]], gi: int,
-                        rate: int) -> dict[str, Any]:
-        sections, shapes = [], []
-        for bq in bqs:
-            kind = classify_biquad(bq)
-            if kind in ("lowpass", "highpass"):
-                d = decode_biquad(bq, rate)
-                if d:
-                    sections.append(d)
-                    shapes.append(kind)
-        entry: dict[str, Any] = {
-            "index": gi,
-            "coeff": bqs,
-            "sections": len(sections),
-            "active": bool(sections),
-        }
-        if sections:
-            alignment, order = identify_alignment(sections)
-            entry["mode"] = max(set(shapes), key=shapes.count)
-            entry["alignment"] = alignment
-            entry["order"] = order
-            entry["freq"] = round(sum(f for f, _ in sections) / len(sections), 1)
-            entry["qs"] = [None if q is None else round(q, 4)
-                           for _, q in sections]
-        return entry
 
     def read_input(self, index: int) -> dict[str, Any]:
         """Gain and PEQ for one input.
@@ -698,8 +722,8 @@ class Readback:
             for slot, addr in enumerate(peq_addrs):
                 off = addr - lo
                 coeff = self._biquads(block[off:off + 5])
-                peq.append(self._describe(coeff[0] if coeff else dict(BYPASS),
-                                          slot, rate))
+                peq.append(describe_peq_band(
+                    coeff[0] if coeff else dict(BYPASS), slot, rate))
         out["peq"] = peq
         return out
 
@@ -751,7 +775,13 @@ def new_project(n_in: int, n_out: int, n_peq: int, rate: int) -> dict[str, Any]:
 
 
 def peq_biquad(band: dict[str, Any], rate: int) -> dict[str, float]:
-    """Coefficients for one PEQ band: imported values win over designed ones."""
+    """What a band contributes to the response *as things stand*.
+
+    A band that is switched off contributes nothing, so this returns a
+    passthrough for it. That makes this the right function for drawing and
+    the wrong one for writing -- see peq_coeff, which returns the designed
+    coefficients whether or not the band is currently in circuit.
+    """
     if band.get("manual"):
         return dict(band["manual"])
     if not band.get("enabled"):
@@ -762,10 +792,14 @@ def peq_biquad(band: dict[str, Any], rate: int) -> dict[str, float]:
 
 def crossover_biquads(group: dict[str, Any], rate: int,
                       slots: int = 4) -> list[dict[str, float]]:
-    """Coefficients for one crossover group, padded to `slots`.
+    """What a crossover group contributes to the response as things stand.
 
-    Unused slots are written as explicit passthroughs so stale coefficients
-    from a previous tuning can never linger in the hardware.
+    A group that is switched off contributes nothing. Padded to `slots` with
+    passthroughs, so a caller always gets a fixed-length cascade.
+
+    The counterpart for writing is crossover_coeffs, which designs the group
+    regardless of whether it is engaged and numbers each section for the
+    payload.
     """
     if group.get("manual"):
         designed = [dict(b) for b in group["manual"]]
@@ -788,11 +822,15 @@ def ms_to_duration(ms: float) -> dict[str, int]:
 
 
 def peq_coeff(band: dict[str, Any], rate: int) -> dict[str, float]:
-    """Designed coefficients for a band, regardless of its enabled state.
+    """What a band should be *written* as, in or out of circuit.
 
-    Whether the band is *in circuit* is carried by the separate bypass flag,
-    so the coefficients are written either way. This mirrors how Device
-    Console behaves and keeps a disable/re-enable cycle lossless.
+    Whether the band is in circuit is carried by the separate bypass flag, so
+    the coefficients are written either way. This mirrors how Device Console
+    behaves and keeps a disable/re-enable cycle lossless: switching a filter
+    off and on again gets the same filter back rather than a passthrough.
+
+    The counterpart is peq_biquad, which answers what the band contributes
+    right now and is what the response plot uses.
     """
     if band.get("manual"):
         return dict(band["manual"])
@@ -811,6 +849,10 @@ def crossover_coeffs(group: dict[str, Any], rate: int,
     group*. minidspd rejects the payload outright without it ("biquad index
     not specified"), and numbering them absolutely across both groups is
     rejected as out of range.
+
+    Unused slots become explicit passthroughs so that coefficients from a
+    previous tuning can never linger in hardware the current one does not
+    reach. The counterpart for drawing is crossover_biquads.
     """
     if group.get("manual"):
         designed = [dict(b) for b in group["manual"]]
