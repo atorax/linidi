@@ -107,10 +107,28 @@ class Worker(QObject):
             self.failed.emit(str(exc))
 
 
-class TaskRunner:
-    """Keeps thread/worker references alive for the duration of a task."""
+class TaskRunner(QObject):
+    """Runs callables on background threads and reaps them safely.
 
-    def __init__(self):
+    Qt object lifetime here is fussy and worth spelling out, because getting
+    it wrong aborts the process rather than raising:
+
+      * Callbacks must not tear the thread down. A plain lambda connected to a
+        worker signal has no receiver QObject, so Qt uses a *direct* connection
+        and runs it in the worker thread -- where calling QThread.wait() means
+        a thread waiting on itself.
+      * References must outlive the thread. Dropping the last Python reference
+        to a still-running QThread lets the garbage collector destroy it, and
+        Qt aborts with "QThread: Destroyed while thread is still running".
+
+    So: the worker only ever asks the thread to quit, and reaping happens on
+    the main thread once QThread.finished has actually fired. TaskRunner is a
+    QObject owned by the window, so that connection is queued to the main
+    thread rather than run inline.
+    """
+
+    def __init__(self, parent: QObject | None = None):
+        super().__init__(parent)
         self._live: list[tuple[QThread, Worker]] = []
 
     def run(self, fn, on_done=None, on_error=None, *args, **kwargs):
@@ -119,20 +137,37 @@ class TaskRunner:
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
 
-        def cleanup():
-            thread.quit()
-            thread.wait()
-            self._live = [p for p in self._live if p[0] is not thread]
-
+        # Queued: these receivers live on the main thread.
         if on_done:
             worker.done.connect(on_done)
         if on_error:
             worker.failed.connect(on_error)
-        worker.done.connect(lambda _: cleanup())
-        worker.failed.connect(lambda _: cleanup())
+
+        # quit() is thread-safe and merely asks the event loop to stop.
+        worker.done.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._reap)
 
         self._live.append((thread, worker))
         thread.start()
+
+    def _reap(self):
+        """Drop finished threads. Always runs on the main thread."""
+        for pair in list(self._live):
+            thread, worker = pair
+            if thread.isFinished():
+                thread.wait()
+                worker.deleteLater()
+                thread.deleteLater()
+                self._live.remove(pair)
+
+    def shutdown(self):
+        """Stop and join everything still in flight, before the window dies."""
+        for thread, _worker in list(self._live):
+            thread.quit()
+        for thread, _worker in list(self._live):
+            thread.wait(5000)
+        self._live.clear()
 
 
 # --------------------------------------------------------------------------
@@ -663,7 +698,7 @@ class MainWindow(QMainWindow):
     def __init__(self, opts):
         super().__init__()
         self.opts = opts
-        self.tasks = TaskRunner()
+        self.tasks = TaskRunner(self)
         self.daemon = core.Daemon(opts.daemon, opts.device)
         self.amap: core.AddressMap | None = None
         self.readback: core.Readback | None = None
@@ -687,17 +722,13 @@ class MainWindow(QMainWindow):
 
         bar = QHBoxLayout()
         bar.setContentsMargins(10, 6, 10, 6)
+        # Safe, frequently-used actions live together on the left.
         self.read_btn = QPushButton("Read from device")
         self.read_btn.setToolTip(
             "Read live coefficients off the hardware and load them here.\n"
             "This only reads; nothing is written.")
         self.read_btn.clicked.connect(self.on_read)
         bar.addWidget(self.read_btn)
-
-        self.apply_btn = QPushButton("Apply to device")
-        self.apply_btn.setObjectName("primary")
-        self.apply_btn.clicked.connect(self.on_apply)
-        bar.addWidget(self.apply_btn)
 
         self.rew_btn = QPushButton("Import REW...")
         self.rew_btn.clicked.connect(self.on_rew)
@@ -706,10 +737,27 @@ class MainWindow(QMainWindow):
         for text, slot in (("Save project", self.on_save),
                            ("Load project", self.on_load)):
             b = QPushButton(text); b.clicked.connect(slot); bar.addWidget(b)
+
         bar.addStretch(1)
         self.warn_label = QLabel("")
         self.warn_label.setObjectName("muted")
         bar.addWidget(self.warn_label)
+
+        # Apply writes to the hardware. Keep it well away from everything
+        # else so it cannot be hit by accident while tuning.
+        bar.addSpacing(28)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setStyleSheet(f"color: {LINE};")
+        bar.addWidget(sep)
+        bar.addSpacing(28)
+
+        self.apply_btn = QPushButton("Apply to device")
+        self.apply_btn.setObjectName("primary")
+        self.apply_btn.setToolTip(
+            "Write this project to the hardware, overwriting what is loaded.")
+        self.apply_btn.clicked.connect(self.on_apply)
+        bar.addWidget(self.apply_btn)
         holder = QWidget(); holder.setLayout(bar)
         root.addWidget(holder)
 
@@ -1023,6 +1071,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Could not save: {exc}", 6000)
 
     def closeEvent(self, ev):
+        self.poll.stop()
+        # Join background threads before teardown; a QThread destroyed while
+        # still running aborts the process.
+        self.tasks.shutdown()
         if self.project:
             self.save_project()
         ev.accept()
