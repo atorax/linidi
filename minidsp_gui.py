@@ -591,7 +591,13 @@ class RoutingTable(QTableWidget):
         super().__init__(0, len(self.COLS))
         self.setHorizontalHeaderLabels(self.COLS)
         self.verticalHeader().setVisible(False)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        hh = self.horizontalHeader()
+        # Only the destination name absorbs slack; the checkbox and the gain
+        # field have a fixed natural width and stretching them just pads air.
+        hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.setTextElideMode(Qt.ElideRight)
         self.setSelectionMode(QTableWidget.NoSelection)
         self.routes: list[dict[str, Any]] = []
         self._loading = False
@@ -611,11 +617,13 @@ class RoutingTable(QTableWidget):
                 active = [g for g in target.get("crossover", [])
                           if g.get("enabled")]
                 if active:
-                    summary = "  " + " / ".join(
-                        f"{'HP' if g['mode'] == 'highpass' else 'LP'} "
+                    summary = " · " + "/".join(
+                        f"{'HP' if g['mode'] == 'highpass' else 'LP'}"
                         f"{g['freq']:.0f}" for g in active)
 
             item = QTableWidgetItem(name + summary)
+            item.setToolTip(f"{name}{summary.replace(chr(183), '')}".strip()
+                            or name)
             item.setFlags(Qt.ItemIsEnabled)
             if not route.get("enabled"):
                 item.setForeground(QColor(MUTED))
@@ -630,7 +638,7 @@ class RoutingTable(QTableWidget):
             self.setCellWidget(r, 1, holder)
 
             sb = QDoubleSpinBox()
-            sb.setRange(-127.0, 12.0); sb.setDecimals(2)
+            sb.setRange(-127.0, 12.0); sb.setDecimals(1)
             sb.setSingleStep(0.5); sb.setSuffix(" dB")
             sb.setValue(float(route.get("gain", 0.0)))
             sb.valueChanged.connect(self._emit)
@@ -1172,7 +1180,7 @@ class MainWindow(QMainWindow):
         self.out_box = QVBoxLayout(); lv.addLayout(self.out_box)
         ml.addWidget(levels)
         ml.addWidget(self.editor.side, 1)
-        right.setFixedWidth(360)
+        right.setFixedWidth(286)
         splitter.addWidget(right)
 
         splitter.setStretchFactor(1, 1)
