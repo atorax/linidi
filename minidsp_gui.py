@@ -482,6 +482,14 @@ class ChannelEditor(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
 
+        # Where this channel sits in the signal path.
+        self.chain = QLabel("")
+        self.chain.setTextFormat(Qt.RichText)
+        self.chain.setStyleSheet(
+            f"background: {PANEL}; border: 1px solid {LINE}; "
+            f"border-radius: 6px; padding: 7px 10px; font-size: 12px;")
+        root.addWidget(self.chain)
+
         basics = QGroupBox("Channel")
         bl = QHBoxLayout(basics)
         self.gain = QDoubleSpinBox()
@@ -545,8 +553,58 @@ class ChannelEditor(QWidget):
             for widget, group in zip(self.xo_groups, chan.get("crossover", [])):
                 widget.load(group)
         self.peq.load(chan.get("peq", []))
+        self._update_chain()
         self._loading = False
         self.refresh_plot()
+
+    def _update_chain(self):
+        """Render the signal path, highlighting the current stage."""
+        if self.chan is None:
+            self.chain.setText("")
+            return
+
+        def step(text, here=False):
+            if here:
+                return (f"<span style='color:{ACCENT}; font-weight:600'>"
+                        f"{text}</span>")
+            return f"<span style='color:{MUTED}'>{text}</span>"
+
+        arrow = f"<span style='color:{LINE}'> &#8594; </span>"
+        name = self.chan.get("name", "")
+
+        if self.is_output:
+            feeding = self._feeding_inputs()
+            src = (", ".join(i["name"] for i in feeding) if feeding
+                   else "no input routed")
+            n_eq = sum(core.count_effective_peq(i.get("peq", []))
+                       for i in feeding)
+            parts = [
+                step(src),
+                step(f"EQ ({n_eq})" if n_eq else "EQ"),
+                step("routing"),
+                step(name, here=True),
+                step("crossover"),
+                step("PEQ"),
+                step("gain / delay"),
+                step("driver"),
+            ]
+        else:
+            idx = self.chan.get("index")
+            outs = [o["name"] for o in (self.project or {}).get("outputs", [])
+                    for r in self.chan.get("routing", [])
+                    if r.get("index") == o.get("index")
+                    and r.get("enabled") and self.chan.get("index") == idx]
+            dest = ", ".join(outs) if outs else "not routed"
+            parts = [
+                step("source"),
+                step(name, here=True),
+                step("EQ"),
+                step("routing"),
+                step(dest),
+                step("crossover"),
+                step("driver"),
+            ]
+        self.chain.setText(arrow.join(parts))
 
     def store(self):
         if self.chan is None:
@@ -896,7 +954,7 @@ class MainWindow(QMainWindow):
         self.project = self.load_project(n_in, n_out, n_peq or 10, rate)
         self.build_meters(n_in, n_out)
         self.refresh_list()
-        self.chan_list.setCurrentRow(0)
+        self.chan_list.setCurrentRow(1)     # row 0 is a section header
         self.update_warning()
         self.poll.start(500)
         self.statusBar().showMessage(f"Connected to {name}", 4000)
@@ -920,39 +978,76 @@ class MainWindow(QMainWindow):
             m = MeterBar(str(i + 1)); self.out_meters.append(m)
             self.out_box.addWidget(m)
 
+    @staticmethod
+    def _summarise_output(out: dict[str, Any]) -> str:
+        """One-line description of what an output is actually doing."""
+        bits = []
+        for g in out.get("crossover", []):
+            if not g.get("enabled"):
+                continue
+            tag = "HP" if g.get("mode") == "highpass" else "LP"
+            bits.append(f"{tag} {g.get('freq', 0):.0f}")
+        pq = core.count_effective_peq(out.get("peq", []))
+        if pq:
+            bits.append(f"{pq} PEQ")
+        return " / ".join(bits) if bits else "unused"
+
+    def _add_header(self, text: str):
+        item = QListWidgetItem(text)
+        item.setFlags(Qt.NoItemFlags)              # not selectable
+        item.setForeground(QColor(MUTED))
+        font = item.font()
+        font.setPointSizeF(max(7.0, font.pointSizeF() - 1.5))
+        font.setCapitalization(QFont.AllUppercase)
+        item.setFont(font)
+        self.chan_list.addItem(item)
+
     def refresh_list(self):
-        row = self.chan_list.currentRow()
+        """Channel list ordered by signal flow: inputs first, then outputs."""
+        prev = self.chan_list.currentItem()
+        prev_key = prev.data(Qt.UserRole) if prev else None
+
         self.chan_list.blockSignals(True)
         self.chan_list.clear()
-        for out in self.project["outputs"]:
-            tags = []
-            active_xo = sum(1 for g in out.get("crossover", [])
-                            if g.get("enabled"))
-            active_pq = sum(1 for b in out.get("peq", [])
-                            if b.get("enabled"))
-            if active_xo:
-                tags.append(f"{active_xo}xo")
-            if active_pq:
-                tags.append(f"{active_pq}peq")
-            label = out["name"] + ("   " + " ".join(tags) if tags else "")
-            item = QListWidgetItem(label)
-            if out.get("mute"):
+
+        self._add_header("Inputs · voicing")
+        for i, inp in enumerate(self.project["inputs"]):
+            pq = core.count_effective_peq(inp.get("peq", []))
+            item = QListWidgetItem(
+                f"{inp['name']}      {pq} PEQ" if pq else inp["name"])
+            item.setData(Qt.UserRole, ("input", i))
+            if inp.get("mute"):
                 item.setForeground(QColor(MUTED))
             self.chan_list.addItem(item)
-        for inp in self.project["inputs"]:
-            self.chan_list.addItem(QListWidgetItem("- " + inp["name"]))
+
+        self._add_header("Outputs · crossover")
+        for i, out in enumerate(self.project["outputs"]):
+            summary = self._summarise_output(out)
+            item = QListWidgetItem(f"{out['name']}      {summary}")
+            item.setData(Qt.UserRole, ("output", i))
+            if out.get("mute") or summary == "unused":
+                item.setForeground(QColor(MUTED))
+            self.chan_list.addItem(item)
+
         self.chan_list.blockSignals(False)
-        if row >= 0:
-            self.chan_list.setCurrentRow(min(row, self.chan_list.count() - 1))
+
+        target = 1        # first real row, skipping the header
+        if prev_key:
+            for r in range(self.chan_list.count()):
+                if self.chan_list.item(r).data(Qt.UserRole) == prev_key:
+                    target = r
+                    break
+        self.chan_list.setCurrentRow(target)
 
     def current_channel(self):
-        row = self.chan_list.currentRow()
-        n_out = len(self.project["outputs"])
-        if row < 0:
+        item = self.chan_list.currentItem()
+        key = item.data(Qt.UserRole) if item else None
+        if not key:
             return None, True
-        if row < n_out:
-            return self.project["outputs"][row], True
-        return self.project["inputs"][row - n_out], False
+        kind, idx = key
+        if kind == "output":
+            return self.project["outputs"][idx], True
+        return self.project["inputs"][idx], False
 
     # ---- events ----
 

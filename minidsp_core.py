@@ -846,3 +846,25 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
                 dst["manual"] = f["coeff"]
 
     return stats
+
+
+def peq_is_effective(band: dict[str, Any]) -> bool:
+    """Whether a PEQ band actually alters the signal.
+
+    Device Console leaves unused bands un-bypassed but flat, so "enabled" is
+    not the same as "doing something": a peaking or shelving filter at 0 dB is
+    a no-op. Filters whose shape does not depend on gain (pass, notch, allpass)
+    always count.
+    """
+    if not band.get("enabled"):
+        return False
+    manual = band.get("manual")
+    if manual:
+        return not is_bypass(manual)
+    if band.get("type") in ("peaking", "lowshelf", "highshelf"):
+        return abs(float(band.get("gain", 0.0))) > 1e-6
+    return True
+
+
+def count_effective_peq(bands: Iterable[dict[str, Any]]) -> int:
+    return sum(1 for b in bands if peq_is_effective(b))
