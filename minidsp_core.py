@@ -270,7 +270,25 @@ def biquad_gain_db(bq: dict[str, float], freq: float, rate: int) -> float:
 
 
 def classify_biquad(bq: dict[str, float]) -> str:
-    """Rough shape of a biquad from its numerator."""
+    """Rough shape of a section, from the relationships between its terms.
+
+    The numerator alone cannot separate a notch from a high-pass: both have
+    b2 == b0, and a notch's b1 = -2cos(w0)*b0 approaches -2*b0 as its centre
+    frequency falls, which is exactly the high-pass form. What distinguishes
+    the peaking family is that its numerator mirrors the feedback term,
+    b1 == -a1, so that is tested first.
+
+    An earlier version tried to catch notches with a test that was a strict
+    superset of the high-pass test above it, so it could only ever fire on
+    shapes that were not notches, and real notches fell through to "other".
+
+    One degeneracy is real rather than a shortcoming here: as a notch's centre
+    frequency falls, its coefficients converge on a high-pass's, the two
+    differing by a term in (1 - cos w0) that vanishes. A notch placed very low
+    will read as a high-pass. Pass filters are tested first deliberately,
+    since decode_peq branches on that answer and a crossover section read as
+    something else would be decoded down the wrong path.
+    """
     b0, b1, b2 = bq["b0"], bq["b1"], bq["b2"]
     if is_bypass(bq):
         return "bypass"
@@ -286,12 +304,19 @@ def classify_biquad(bq: dict[str, float]) -> str:
             return "highpass"
         return "other"
 
-    if abs(b1 - 2 * b0) < rel and abs(b2 - b0) < rel:
-        return "lowpass"
-    if abs(b1 + 2 * b0) < rel and abs(b2 - b0) < rel:
-        return "highpass"
-    if abs(b1 + 2 * b0) < rel and abs(b2 - b0) < rel * 10:
+    if abs(b2 - b0) < rel:
+        # A symmetric numerator is a pass filter or a notch, and they are
+        # told apart by b1 alone.
+        if abs(b1 - 2 * b0) < rel:
+            return "lowpass"
+        if abs(b1 + 2 * b0) < rel:
+            return "highpass"
         return "notch"
+
+    if abs(b1 + bq["a1"]) < max(rel, abs(bq["a1"]) * 1e-3):
+        # Numerator mirrors the feedback term: the peaking family, which
+        # includes the shelves.
+        return "peaking"
     return "other"
 
 
@@ -382,6 +407,7 @@ def identify_alignment(sections: list[tuple[float, float]]) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 
 _REW_COEF = re.compile(r"^\s*([ab][012])\s*=\s*(-?[\d.eE+-]+)\s*,?\s*$")
+REW_KEYS = frozenset(("b0", "b1", "b2", "a1", "a2"))
 
 
 def parse_rew_biquads(text: str) -> list[dict[str, float]]:
@@ -392,17 +418,23 @@ def parse_rew_biquads(text: str) -> list[dict[str, float]]:
     """
     out: list[dict[str, float]] = []
     cur: dict[str, float] = {}
+
+    def flush() -> None:
+        # Some exports carry an explicit a0=1 line. Requiring exactly five
+        # entries silently dropped every one of those biquads; require the
+        # five that matter and ignore anything else on the way past.
+        if REW_KEYS <= cur.keys():
+            out.append({k: cur[k] for k in REW_KEYS})
+
     for line in text.splitlines():
         if line.strip().lower().startswith("biquad"):
-            if len(cur) == 5:
-                out.append(cur)
+            flush()
             cur = {}
             continue
         m = _REW_COEF.match(line)
         if m:
             cur[m.group(1)] = float(m.group(2))
-    if len(cur) == 5:
-        out.append(cur)
+    flush()
     return out
 
 
@@ -1303,7 +1335,14 @@ def unknown_bypass(project: dict[str, Any]) -> list[str]:
     return out
 
 
-def decode_peq(bq: dict[str, float], rate: int):
+# Where the decoded answer is checked against the original, and how far apart
+# they may be. Spread across the audible band rather than concentrated, since
+# the shapes that fool the inverse diverge at the extremes.
+DECODE_CHECK_FREQS = [20.0 * (1000.0 ** (i / 31.0)) for i in range(32)]
+DECODE_CHECK_TOL_DB = 0.1
+
+
+def _decode_peq_raw(bq: dict[str, float], rate: int):
     """Recover (type, f0, Q, gain_db) from a PEQ biquad, or None.
 
     Inverts the RBJ design. For a peaking section in miniDSP convention the
@@ -1357,6 +1396,44 @@ def decode_peq(bq: dict[str, float], rate: int):
     if alpha <= 0:
         return None
     return "peaking", f0, math.sin(w0) / (2.0 * alpha), 40.0 * math.log10(A)
+
+
+def decode_peq(bq: dict[str, float], rate: int):
+    """(type, f0, Q, gain_db) for a section, or None if it is not one of ours.
+
+    Wraps the inversion in a check: design a filter from the answer and
+    compare it with what came in. The inverse only covers the pass filters and
+    the peaking/notch pair, but several shapes it does not cover satisfy the
+    same b1 == -a1 relationship it keys on -- a shelf and an all-pass both do
+    -- so without this it reported them confidently as peaking or notch, with
+    parameters that describe neither.
+
+    The comparison is of responses, not coefficients. Low-frequency sections
+    put their poles and zeros so close to z = 1 that agreeing to five decimal
+    places means nothing: a 100 Hz shelf and the peaking filter this inverse
+    mistakes it for match to about 1e-5 in every coefficient and still differ
+    by 5.5 dB at 20 Hz. What matters is whether the two describe the same
+    curve, so that is what is checked.
+
+    Returning None is the honest answer for a section the app cannot express
+    as type, frequency, Q and gain; the caller keeps it as raw coefficients,
+    which is exactly what the Biquad tab is for.
+    """
+    guess = _decode_peq_raw(bq, rate)
+    if guess is None:
+        return None
+    kind, f0, q, gain = guess
+    if not (0 < f0 < rate / 2) or not q or q <= 0:
+        return None
+    try:
+        check = design_biquad(kind, f0, q, gain, rate)
+    except ValueError:
+        return None
+    a = response_db([bq], DECODE_CHECK_FREQS, rate)
+    b = response_db([check], DECODE_CHECK_FREQS, rate)
+    if max(abs(x - y) for x, y in zip(a, b)) > DECODE_CHECK_TOL_DB:
+        return None
+    return guess
 
 
 # ---------------------------------------------------------------------------
