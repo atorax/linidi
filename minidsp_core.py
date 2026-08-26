@@ -209,6 +209,16 @@ def is_bypass(bq: dict[str, float], tol: float = 1e-9) -> bool:
             and all(abs(bq[k]) < tol for k in ("b1", "b2", "a1", "a2")))
 
 
+def is_first_order(bq: dict[str, float], tol: float = 1e-9) -> bool:
+    """A 1st-order section stored as a biquad: second-order terms are zero.
+
+    Odd-order Butterworths and Linkwitz-Riley 12 dB/oct (two cascaded
+    1st-order sections) produce these, so they must be recognised or the
+    filters read back as unidentifiable.
+    """
+    return abs(bq.get("b2", 0.0)) < tol and abs(bq.get("a2", 0.0)) < tol
+
+
 def classify_biquad(bq: dict[str, float]) -> str:
     """Rough shape of a biquad from its numerator."""
     b0, b1, b2 = bq["b0"], bq["b1"], bq["b2"]
@@ -217,6 +227,15 @@ def classify_biquad(bq: dict[str, float]) -> str:
     if abs(b0) < 1e-12:
         return "unknown"
     rel = abs(b0) * 1e-3
+
+    if is_first_order(bq):
+        # 1st-order low-pass has b1 == b0; high-pass has b1 == -b0.
+        if abs(b1 - b0) < rel:
+            return "lowpass"
+        if abs(b1 + b0) < rel:
+            return "highpass"
+        return "other"
+
     if abs(b1 - 2 * b0) < rel and abs(b2 - b0) < rel:
         return "lowpass"
     if abs(b1 + 2 * b0) < rel and abs(b2 - b0) < rel:
@@ -235,6 +254,17 @@ def decode_biquad(bq: dict[str, float], rate: int) -> tuple[float, float] | None
         Q        = sin(w0) / (2 * alpha)
     """
     a1, a2 = bq["a1"], bq["a2"]
+
+    if is_first_order(bq):
+        # 1st-order: a1 = (1 - k) / (1 + k) with k = tan(pi * f0 / rate),
+        # so k = (1 - a1) / (1 + a1). Q is undefined for a single pole.
+        if abs(1.0 + a1) < 1e-12:
+            return None
+        k = (1.0 - a1) / (1.0 + a1)
+        if k <= 0:
+            return None
+        return rate * math.atan(k) / math.pi, None
+
     if abs(1.0 - a2) < 1e-12:
         return None
     alpha = (1.0 + a2) / (1.0 - a2)
@@ -256,21 +286,44 @@ def identify_alignment(sections: list[tuple[float, float]]) -> tuple[str, int]:
     """
     if not sections:
         return "custom", 0
-    qs = sorted(q for _, q in sections)
-    order = 2 * len(sections)
 
-    if all(abs(q - 0.7071) < 0.02 for q in qs):
-        return "linkwitz-riley", order          # LR: repeated 0.707 sections
-    bw, _ = butterworth_qs(order)
-    if len(bw) == len(qs) and all(abs(a - b) < 0.02
-                                  for a, b in zip(qs, sorted(bw))):
-        return "butterworth", order
-    if order in BESSEL_Q:
-        bs = sorted(BESSEL_Q[order])
-        if all(abs(a - b) < 0.02 for a, b in zip(qs, bs)):
+    # A section with q of None is 1st-order and contributes one pole, not two.
+    qs = sorted(q for _, q in sections if q is not None)
+    n_first = sum(1 for _, q in sections if q is None)
+    order = 2 * len(qs) + n_first
+
+    def matches(a: list[float], b: list[float]) -> bool:
+        return len(a) == len(b) and all(abs(x - y) < 0.02
+                                        for x, y in zip(a, sorted(b)))
+
+    if n_first and not qs:
+        # Purely 1st-order. Two cascaded at one corner is LR12; one alone is
+        # a 6 dB/oct Butterworth.
+        return ("linkwitz-riley", 2) if n_first == 2 else ("butterworth",
+                                                           n_first)
+
+    if not n_first:
+        # Linkwitz-Riley of order N is Butterworth(N/2) cascaded twice, so
+        # every Q appears exactly twice. That makes LR24 a pair of 0.7071
+        # sections but LR48 a pair of 0.5412 *and* a pair of 1.3066 -- so
+        # matching on "all 0.7071" only ever recognised LR24.
+        if order % 4 == 0:
+            half_qs, half_first = butterworth_qs(order // 2)
+            if not half_first and matches(qs, half_qs + half_qs):
+                return "linkwitz-riley", order
+
+        bw, bw_first = butterworth_qs(order)
+        if not bw_first and matches(qs, bw):
+            return "butterworth", order
+
+        if order in BESSEL_Q and matches(qs, BESSEL_Q[order]):
             return "bessel", order
-    if len(qs) == 1 and abs(qs[0] - 0.5) < 0.02:
-        return "linkwitz-riley", 2
+    else:
+        # Mixed: an odd-order Butterworth is 1st-order plus biquads.
+        bw, bw_first = butterworth_qs(order)
+        if bw_first and n_first == 1 and matches(qs, bw):
+            return "butterworth", order
+
     return "custom", order
 
 
@@ -511,7 +564,8 @@ class Readback:
         }
         d = decode_biquad(bq, rate)
         if d:
-            entry["freq"], entry["q"] = round(d[0], 1), round(d[1], 4)
+            entry["freq"] = round(d[0], 1)
+            entry["q"] = None if d[1] is None else round(d[1], 4)
         return entry
 
     @staticmethod
@@ -537,7 +591,8 @@ class Readback:
             entry["alignment"] = alignment
             entry["order"] = order
             entry["freq"] = round(sum(f for f, _ in sections) / len(sections), 1)
-            entry["qs"] = [round(q, 4) for _, q in sections]
+            entry["qs"] = [None if q is None else round(q, 4)
+                           for _, q in sections]
         return entry
 
     def read_all(self, n_outputs: int | None = None) -> list[dict[str, Any]]:
@@ -992,3 +1047,37 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
         # Push the request the other way by the observed error.
         request = max(-127.0, min(0.0, request - error))
     return achieved, tries
+
+
+def apply_project(daemon: "Daemon", project: dict[str, Any],
+                  readback: "Readback | None" = None,
+                  verify_gains: bool = False,
+                  tol: float = 0.05) -> dict[str, Any]:
+    """Push a project to the device, optionally correcting gain quantisation.
+
+    `verify_gains` costs two or three extra round-trips per output that misses
+    its target, so it is opt-in: it is worth doing when the user has just
+    changed a gain, and wasted when the project's gains came from readback and
+    already reflect what the hardware holds.
+    """
+    payload = build_config_payload(project)
+    daemon.set_config(payload)
+    result: dict[str, Any] = {"outputs": len(payload["outputs"]),
+                              "corrected": []}
+    if not (verify_gains and readback):
+        return result
+
+    for out in project["outputs"]:
+        idx = out["index"]
+        if idx >= len(readback.amap.outputs):
+            continue
+        target = float(out.get("gain", 0.0))
+        achieved = readback.read_output(idx).get("gain")
+        if achieved is None or abs(achieved - target) <= tol:
+            continue
+        got, writes = write_gain_verified(daemon, readback, idx, target,
+                                          tol=tol)
+        result["corrected"].append(
+            {"output": idx, "target": target, "achieved": got,
+             "writes": writes})
+    return result
