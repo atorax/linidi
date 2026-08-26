@@ -1,31 +1,44 @@
 #!/usr/bin/env bash
 # Build a single-file executable.
 #
-# minidsp-gui shells out to the `minidsp` CLI and talks to `minidspd` over
-# HTTP. Neither is a Python import, so PyInstaller cannot discover them --
-# they are bundled explicitly here so the result really is one file.
+# The app talks to the device directly over USB, so nothing external is
+# bundled: no minidsp-rs binaries, no daemon. What goes in is the Python, Qt,
+# the address maps, the icons and the licence texts.
 #
-# minidsp-rs is Apache-2.0; redistributing its binaries requires the
-# attribution in NOTICE, which is bundled too.
+# Qt arrives through PySide6, which is LGPL v3. Record the version printed
+# below in the release notes -- that, plus offering to relink, is what the
+# licence asks of a single-file build.
 set -euo pipefail
 
-MINIDSP="${MINIDSP:-$(command -v minidsp || true)}"
-MINIDSPD="${MINIDSPD:-$(command -v minidspd || true)}"
+cd "$(dirname "$0")"
 
-args=(--onefile --name minidsp-gui --add-data "address_maps:address_maps"
-      --add-data "icons:icons"
-      --add-data "NOTICE:." --add-data "LICENSE:.")
-
-if [[ -n "$MINIDSP" && -n "$MINIDSPD" ]]; then
-    echo "bundling $MINIDSP and $MINIDSPD"
-    args+=(--add-binary "$MINIDSP:." --add-binary "$MINIDSPD:.")
+# Prefer a local venv, since distributions increasingly refuse to let pip
+# install into the system Python. Create one with:
+#   python3 -m venv --system-site-packages .venv
+#   .venv/bin/pip install pyinstaller
+if [[ -x .venv/bin/pyinstaller ]]; then
+    PYI=.venv/bin/pyinstaller
+    PY=.venv/bin/python
+elif command -v pyinstaller >/dev/null; then
+    PYI=pyinstaller
+    PY=python3
 else
-    echo "WARNING: minidsp/minidspd not found; the build will require them"
-    echo "         to be installed separately. Set MINIDSP= and MINIDSPD=."
+    echo "pyinstaller not found. See the comment above for how to install it." >&2
+    exit 1
 fi
 
-python3 -c 'import PySide6; print("PySide6", PySide6.__version__)'
-pyinstaller "${args[@]}" minidsp_gui.py
+"$PY" - <<'EOF'
+import PySide6, usb, requests
+print(f"PySide6 {PySide6.__version__}  (LGPL v3 -- record this version)")
+print(f"pyusb   {usb.__version__}")
+EOF
+
+"$PYI" --onefile --name minidsp-gui --noconfirm \
+    --add-data "address_maps:address_maps" \
+    --add-data "icons:icons" \
+    --add-data "NOTICE:." \
+    --add-data "LICENSE:." \
+    minidsp_gui.py
+
 echo
-echo "Built dist/minidsp-gui"
-echo "Record the PySide6 version above in your release notes (LGPL v3)."
+echo "Built dist/minidsp-gui  ($(du -h dist/minidsp-gui | cut -f1))"

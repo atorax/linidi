@@ -4,9 +4,10 @@ minidsp-gui -- a desktop tuning front-end for miniDSP hardware on Linux.
 
     python3 minidsp_gui.py
 
-Requires `minidspd` (from minidsp-rs) to be running. All DSP writes go through
-its REST API; readback drives the `minidsp` CLI, which is the only path that
-exposes the protocol's ReadFloats.
+Talks to the device directly over USB and needs nothing else installed -- no
+daemon, no external binaries. If the USB device cannot be opened (usually a
+missing udev rule) it falls back to minidspd's REST API and the `minidsp` CLI,
+for anyone who already has minidsp-rs set up.
 
 License: Apache-2.0
 """
