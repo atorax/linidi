@@ -876,6 +876,12 @@ def apply_readback(project: dict[str, Any],
             out["gain"] = r["gain"]
         if "delay" in r:
             out["delay"] = r["delay"]
+        # Unlike bypass, the channel gate and polarity have readable
+        # addresses, so these are the device's own answer and not a guess.
+        if "mute" in r:
+            out["mute"] = r["mute"]
+        if "invert" in r:
+            out["invert"] = r["invert"]
 
         for gi, g in enumerate(r.get("crossover", [])):
             if gi >= len(out["crossover"]):
@@ -910,6 +916,8 @@ def apply_readback(project: dict[str, Any],
         inp = project["inputs"][idx]
         if "gain" in r:
             inp["gain"] = r["gain"]
+        if "mute" in r:
+            inp["mute"] = r["mute"]
         _apply_peq_readback(inp["peq"], r.get("peq", []), rate)
 
     return project

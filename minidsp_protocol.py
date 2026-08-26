@@ -437,6 +437,18 @@ class MiniDSP:
             raise ProtocolError(f"short float reply ({len(body)} bytes)")
         return list(struct.unpack("<" + "f" * count, body))
 
+    def read_ints(self, addr: int, count: int) -> list[int]:
+        """Read parameters that hold integers rather than floats.
+
+        The device has one parameter-read command and always hands back four
+        raw bytes per address; only the caller knows how they are meant to be
+        read. Flags like channel mute and polarity are small integers, which
+        as a float come out denormal (2 reads as 2.8e-45), so reinterpret the
+        same bytes instead of converting them.
+        """
+        return [struct.unpack("<I", struct.pack("<f", f))[0]
+                for f in self.read_floats(addr, count)]
+
     def write_float(self, addr: int, value: float,
                     mode: int = MODE_APPLY) -> None:
         self.command(CMD_LOAD_DSP_PARAM,

@@ -151,6 +151,10 @@ class NativeDevice:
             if "delay" in spec:
                 raw = self._dev.read_floats(spec["delay"], 1)[0]
                 out["delay"] = round(_delay_ms(raw, self.rate), 4)
+            if "enable" in spec:
+                _set_gate(out, self._dev.read_ints(spec["enable"], 1)[0])
+            if "invert" in spec:
+                out["invert"] = bool(self._dev.read_ints(spec["invert"], 1)[0])
             peq_addrs = spec.get("peq", [])
             peq_blocks = {a: self._dev.read_floats(a, 5) for a in peq_addrs}
             xo_blocks = {a: self._floats(a, 20)
@@ -171,6 +175,8 @@ class NativeDevice:
         with self._lock:
             if "gain" in spec:
                 out["gain"] = round(self._dev.read_floats(spec["gain"], 1)[0], 3)
+            if "enable" in spec:
+                _set_gate(out, self._dev.read_ints(spec["enable"], 1)[0])
             peq_addrs = spec.get("peq", [])
             blocks = {a: self._dev.read_floats(a, 5) for a in peq_addrs}
         out["peq"] = [_describe_peq(_as_biquad(blocks[a]), i, self.rate)
@@ -213,6 +219,8 @@ class NativeDevice:
                                         _delay_samples(out["delay"], self.rate))
                 if "invert" in out and "invert" in spec:
                     self._dev.write_int(spec["invert"], 1 if out["invert"] else 0)
+                if "mute" in out and "enable" in spec:
+                    self._dev.write_int(spec["enable"], _gate(out["mute"]))
 
                 for band in out.get("peq", []):
                     addrs = spec.get("peq", [])
@@ -237,6 +245,8 @@ class NativeDevice:
                 spec = self.amap.inputs[inp["index"]]
                 if "gain" in inp and "gain" in spec:
                     self._dev.write_float(spec["gain"], float(inp["gain"]))
+                if "mute" in inp and "enable" in spec:
+                    self._dev.write_int(spec["enable"], _gate(inp["mute"]))
                 for band in inp.get("peq", []):
                     addrs = spec.get("peq", [])
                     if band["index"] >= len(addrs):
@@ -263,6 +273,29 @@ class NativeDevice:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+GATE_MUTED, GATE_PASSING = 1, 2
+
+
+def _gate(muted: Any) -> int:
+    """Channel mute, in the 1-off / 2-on encoding the gate address uses.
+
+    Same convention as a mixer cell, and deliberately not 0/1: a plain zero
+    means something else at these addresses.
+    """
+    return GATE_MUTED if muted else GATE_PASSING
+
+
+def _set_gate(out: dict[str, Any], raw: int) -> None:
+    """Record a gate reading, but only when it says something we understand.
+
+    Leaving the key out is what tells the merge layer the device did not
+    report, which is different from it reporting "not muted". Guessing here
+    would put a channel's real state and the screen out of step.
+    """
+    if raw in (GATE_MUTED, GATE_PASSING):
+        out["mute"] = raw == GATE_MUTED
+
 
 def _mixer_status_addr(amap: AddressMap, in_idx: int, out_idx: int) -> int:
     """Where a mixer cell's on/off flag lives.

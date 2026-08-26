@@ -862,6 +862,89 @@ class RoutingTable(QTableWidget):
         return self.routes
 
 
+def format_hz(f: float) -> str:
+    """A corner frequency, short enough to sit in the navigator column."""
+    if f >= 10000:
+        return f"{f / 1000:.0f}k"
+    if f >= 1000:
+        return f"{f / 1000:.1f}k".replace(".0k", "k")
+    return f"{f:.0f}"
+
+
+def passband(chan: dict[str, Any]) -> str:
+    """What band of audio this output actually passes.
+
+    Listing the filters ("HP2600/LP4500") describes how the crossover is
+    built; the band describes what comes out of the jack, which is what you
+    are asking when you scan the channel list. Two highpasses on one output
+    pass the higher corner, two lowpasses the lower one, so the band is the
+    intersection rather than a list.
+    """
+    hp = lp = None
+    for g in chan.get("crossover", []):
+        if not g.get("enabled"):
+            continue
+        f = float(g.get("freq", 0) or 0)
+        if f <= 0:
+            continue
+        if g.get("mode") == "highpass":
+            hp = f if hp is None else max(hp, f)
+        else:
+            lp = f if lp is None else min(lp, f)
+    if hp and lp:
+        return f"{format_hz(hp)}–{format_hz(lp)}"
+    if hp:
+        return f"≥{format_hz(hp)}"
+    if lp:
+        return f"≤{format_hz(lp)}"
+    return ""
+
+
+class ChannelRow(QWidget):
+    """One channel in the navigator: its mute, its name, and what it does.
+
+    Two lines rather than one. The column is narrow and the mute control has
+    to come out of it, which leaves too little width for a name and a band
+    side by side; stacking them means neither has to be elided and a renamed
+    channel still fits.
+    """
+
+    toggled = Signal(bool)
+
+    def __init__(self, name: str, detail: str, muted: bool, dim: bool):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(8)
+
+        self.mute = QPushButton()
+        self.mute.setCheckable(True)
+        self.mute.setChecked(muted)
+        self.mute.setFixedSize(26, 26)
+        self.mute.setIconSize(QSize(17, 17))
+        self.mute.setIcon(speaker_icon(17, muted=muted))
+        self.mute.setCursor(Qt.PointingHandCursor)
+        self.mute.setToolTip(f"{'Unmute' if muted else 'Mute'} {name}")
+        self.mute.setStyleSheet(
+            "QPushButton { background: transparent; border: 0; }"
+            f"QPushButton:hover {{ background: {PANEL2}; border-radius: 4px; }}")
+        # Clicking the mute must not also change which channel is selected.
+        self.mute.clicked.connect(lambda: self.toggled.emit(self.mute.isChecked()))
+        lay.addWidget(self.mute)
+
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(0)
+        self.name = QLabel(name)
+        if muted or dim:
+            self.name.setStyleSheet(f"color: {MUTED};")
+        self.detail = QLabel(detail)
+        self.detail.setObjectName("muted")
+        text.addWidget(self.name)
+        text.addWidget(self.detail)
+        lay.addLayout(text, 1)
+
+
 class ChannelEditor(QWidget):
     """Everything for one output (or input) channel."""
 
@@ -901,15 +984,18 @@ class ChannelEditor(QWidget):
         self.delay.setRange(0.0, 80.0); self.delay.setDecimals(4)
         self.delay.setSingleStep(0.01); self.delay.setSuffix(" ms")
         self.delay.valueChanged.connect(self._emit)
-        self.mute = QPushButton("Mute"); self.mute.setCheckable(True)
-        self.mute.toggled.connect(self._emit)
         self.invert = QPushButton("Invert"); self.invert.setCheckable(True)
         self.invert.toggled.connect(self._emit)
 
-        for label, wdg in [("Gain", self.gain), ("Delay", self.delay)]:
-            lab = QLabel(label); lab.setObjectName("muted")
-            bl.addWidget(lab); bl.addWidget(wdg)
-        bl.addWidget(self.mute); bl.addWidget(self.invert)
+        # The delay label is held so it can be hidden along with its box.
+        # Inputs have no delay address on this hardware, and a label with
+        # nothing beside it reads as a control that has stopped working.
+        gain_label = QLabel("Gain"); gain_label.setObjectName("muted")
+        self.delay_label = QLabel("Delay")
+        self.delay_label.setObjectName("muted")
+        bl.addWidget(gain_label); bl.addWidget(self.gain)
+        bl.addWidget(self.delay_label); bl.addWidget(self.delay)
+        bl.addWidget(self.invert)
         bl.addStretch(1)
         root.addWidget(basics)
 
@@ -961,8 +1047,8 @@ class ChannelEditor(QWidget):
         self.gain.setValue(float(chan.get("gain", 0.0)))
         self.delay.setValue(float(chan.get("delay", 0.0)))
         self.delay.setVisible(is_output)
+        self.delay_label.setVisible(is_output)
         self.invert.setVisible(is_output)
-        self.mute.setChecked(bool(chan.get("mute")))
         self.invert.setChecked(bool(chan.get("invert")))
         self.xo_holder.setVisible(is_output)
         self.routing_box.setVisible(not is_output)
@@ -1108,7 +1194,6 @@ class ChannelEditor(QWidget):
         if self.chan is None:
             return
         self.chan["gain"] = self.gain.value()
-        self.chan["mute"] = self.mute.isChecked()
         if self.is_output:
             self.chan["delay"] = self.delay.value()
             self.chan["invert"] = self.invert.isChecked()
@@ -1423,8 +1508,6 @@ class MainWindow(QMainWindow):
 
         self.chan_list = QListWidget()
         self.chan_list.setFixedWidth(190)
-        # Rows carry a summary that can exceed the column; elide it rather
-        # than growing a horizontal scrollbar in a fixed-width panel.
         self.chan_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.chan_list.setTextElideMode(Qt.ElideRight)
         self.chan_list.currentRowChanged.connect(self.on_select)
@@ -1557,18 +1640,20 @@ class MainWindow(QMainWindow):
             self.out_box.addWidget(m)
 
     @staticmethod
-    def _summarise_output(out: dict[str, Any]) -> str:
+    def _summarise_output(out: dict[str, Any], fed: bool) -> str:
         """One-line description of what an output is actually doing."""
         bits = []
-        for g in out.get("crossover", []):
-            if not g.get("enabled"):
-                continue
-            tag = "HP" if g.get("mode") == "highpass" else "LP"
-            bits.append(f"{tag}{g.get('freq', 0):.0f}")
+        band = passband(out)
+        if band:
+            bits.append(band)
         pq = core.count_effective_peq(out.get("peq", []))
         if pq:
-            bits.append(f"{pq}q")
-        return "/".join(bits) if bits else "unused"
+            bits.append(f"{pq} EQ")
+        if bits:
+            return " · ".join(bits)
+        # No filters at all means two very different things, and the
+        # difference matters when you are looking for a silent driver.
+        return "full range" if fed else "unused"
 
     def _add_header(self, text: str):
         item = QListWidgetItem(text)
@@ -1579,6 +1664,53 @@ class MainWindow(QMainWindow):
         font.setCapitalization(QFont.AllUppercase)
         item.setFont(font)
         self.chan_list.addItem(item)
+
+    def _outputs_fed(self) -> set[int]:
+        """Outputs some input is routed to."""
+        fed = set()
+        for inp in self.project["inputs"]:
+            for r in inp.get("routing", []):
+                if r.get("enabled"):
+                    fed.add(r.get("index"))
+        return fed
+
+    def _add_channel_row(self, kind: str, i: int, chan: dict[str, Any],
+                         detail: str, dim: bool):
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, (kind, i))
+        row = ChannelRow(chan.get("name", ""), detail,
+                         bool(chan.get("mute")), dim)
+        row.toggled.connect(
+            lambda muted, k=kind, n=i: self.on_channel_mute(k, n, muted))
+        item.setSizeHint(row.sizeHint())
+        self.chan_list.addItem(item)
+        self.chan_list.setItemWidget(item, row)
+
+    def on_channel_mute(self, kind: str, index: int, muted: bool):
+        """Mute one channel, straight to the device.
+
+        This is a live control rather than an edit staged for Apply: reaching
+        for mute during a measurement means you want that driver quiet now.
+        """
+        key = "outputs" if kind == "output" else "inputs"
+        chan = self.project[key][index]
+        chan["mute"] = muted
+        self.refresh_list()
+        name = chan.get("name", kind)
+        payload = {key: [{"index": index, "mute": muted}]}
+
+        def failed(msg):
+            # The device did not take it, so put the icon back rather than
+            # leaving the screen claiming a driver is quiet when it is not.
+            chan["mute"] = not muted
+            self.refresh_list()
+            self.statusBar().showMessage(f"{name}: mute failed - {msg}", 8000)
+
+        self.tasks.run(
+            lambda: self.daemon.set_config(payload),
+            on_done=lambda _: self.statusBar().showMessage(
+                f"{name} {'muted' if muted else 'unmuted'}", 3000),
+            on_error=failed)
 
     def refresh_list(self):
         """Channel list ordered by signal flow: inputs first, then outputs."""
@@ -1591,21 +1723,15 @@ class MainWindow(QMainWindow):
         self._add_header("Inputs · voicing")
         for i, inp in enumerate(self.project["inputs"]):
             pq = core.count_effective_peq(inp.get("peq", []))
-            item = QListWidgetItem(
-                f"{inp['name']} · {pq}q" if pq else inp["name"])
-            item.setData(Qt.UserRole, ("input", i))
-            if inp.get("mute"):
-                item.setForeground(QColor(MUTED))
-            self.chan_list.addItem(item)
+            self._add_channel_row("input", i, inp,
+                                  f"{pq} EQ" if pq else "flat", False)
 
         self._add_header("Outputs · crossover")
+        fed = self._outputs_fed()
         for i, out in enumerate(self.project["outputs"]):
-            summary = self._summarise_output(out)
-            item = QListWidgetItem(f"{out['name']} · {summary}")
-            item.setData(Qt.UserRole, ("output", i))
-            if out.get("mute") or summary == "unused":
-                item.setForeground(QColor(MUTED))
-            self.chan_list.addItem(item)
+            summary = self._summarise_output(out, i in fed)
+            self._add_channel_row("output", i, out, summary,
+                                  summary == "unused")
 
         self.chan_list.blockSignals(False)
 
