@@ -607,13 +607,13 @@ class Readback:
 def default_peq_band(index: int) -> dict[str, Any]:
     return {"index": index, "enabled": False, "type": "peaking",
             "freq": 1000.0, "q": 1.0, "gain": 0.0, "manual": None,
-            "bypass_known": True}
+            "bypass_source": "default"}
 
 
 def default_crossover_group(index: int, mode: str) -> dict[str, Any]:
     return {"index": index, "enabled": False, "mode": mode,
             "alignment": "linkwitz-riley", "order": 4, "freq": 80.0,
-            "manual": None, "bypass_known": True}
+            "manual": None, "bypass_source": "default"}
 
 
 def default_output(index: int, n_peq: int) -> dict[str, Any]:
@@ -725,7 +725,7 @@ def _bypass_field(entry: dict[str, Any]) -> dict[str, Any]:
     fields that are present cause a change, so omitting it leaves the device's
     own setting alone. Writing a guess here would silently switch filters on.
     """
-    if entry.get("bypass_known", True):
+    if entry.get("bypass_source", "default") != "unknown":
         return {"bypass": not entry.get("enabled", False)}
     return {}
 
@@ -804,10 +804,12 @@ def apply_readback(project: dict[str, Any],
             if gi >= len(out["crossover"]):
                 break
             dst = out["crossover"][gi]
-            # Coefficients are readable; bypass is not. Flag it so the write
-            # path leaves the device's own bypass setting untouched.
-            dst["bypass_known"] = False
-            dst["enabled"] = bool(g.get("active"))
+            # Coefficients are readable; bypass is not. Only mark it unknown
+            # if the project has not already learned it from a config file --
+            # a read should add knowledge, never destroy it.
+            if dst.get("bypass_source") not in ("import", "user"):
+                dst["bypass_source"] = "unknown"
+                dst["enabled"] = bool(g.get("active"))
             if not g.get("active"):
                 dst["manual"] = None
                 continue
@@ -823,7 +825,8 @@ def apply_readback(project: dict[str, Any],
             if slot >= len(out["peq"]):
                 break
             dst = out["peq"][slot]
-            dst["bypass_known"] = False
+            if dst.get("bypass_source") not in ("import", "user"):
+                dst["bypass_source"] = "unknown"
             if not band.get("active"):
                 dst["enabled"] = False
                 dst["manual"] = None
@@ -949,7 +952,7 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
             stats["crossover"] += 1
             if f["bypass"]:
                 stats["bypassed"] += 1
-            dst["bypass_known"] = True
+            dst["bypass_source"] = "import"
             dst["enabled"] = not f["bypass"]
             dst["manual"] = None
             if "mode" in f:
@@ -968,7 +971,7 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
             stats["peq"] += 1
             if f["bypass"]:
                 stats["bypassed"] += 1
-            dst["bypass_known"] = True
+            dst["bypass_source"] = "import"
             dst["enabled"] = not f["bypass"]
             dst["manual"] = None
             kind = _XML_PEQ_TYPES.get(f["type"])
@@ -1006,7 +1009,7 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
             if not f:
                 continue
             dst = inp["peq"][slot]
-            dst["bypass_known"] = True
+            dst["bypass_source"] = "import"
             dst["enabled"] = not f["bypass"]
             dst["manual"] = None
             kind = _XML_PEQ_TYPES.get(f["type"])
@@ -1105,3 +1108,24 @@ def apply_project(daemon: "Daemon", project: dict[str, Any],
             {"output": idx, "target": target, "achieved": got,
              "writes": writes})
     return result
+
+
+def unknown_bypass(project: dict[str, Any]) -> list[str]:
+    """Filters whose bypass state the app does not actually know.
+
+    Bypass cannot be read from the hardware -- it is a command with no stored,
+    retrievable parameter, which is why miniDSP's own Device Console tracks it
+    in a config file rather than querying the device. Anything listed here must
+    be resolved before writing, because guessing switches filters on or off.
+    """
+    out: list[str] = []
+    for chan_kind, key in (("output", "outputs"), ("input", "inputs")):
+        for chan in project.get(key, []):
+            name = chan.get("name", f"{chan_kind} {chan.get('index')}")
+            for g in chan.get("crossover", []):
+                if g.get("bypass_source", "default") == "unknown":
+                    out.append(f"{name} crossover {g.get('index', 0) + 1}")
+            for b in chan.get("peq", []):
+                if b.get("bypass_source", "default") == "unknown":
+                    out.append(f"{name} PEQ {b.get('index', 0) + 1}")
+    return out

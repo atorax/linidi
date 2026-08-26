@@ -370,7 +370,7 @@ class CrossoverGroup(QGroupBox):
             self.enabled.setCheckState(Qt.Checked)
         self.enabled.setTristate(False)
         self.enabled.setToolTip("")
-        self.data["bypass_known"] = True
+        self.data["bypass_source"] = "user"
 
     def _on_alignment(self, *_):
         self._refresh_orders()
@@ -412,7 +412,7 @@ class CrossoverGroup(QGroupBox):
     def load(self, group: dict[str, Any]):
         self._loading = True
         self.data = group
-        known = group.get("bypass_known", True)
+        known = group.get("bypass_source", "default") != "unknown"
         self.enabled.setTristate(not known)
         if known:
             self.enabled.setCheckState(
@@ -438,7 +438,7 @@ class CrossoverGroup(QGroupBox):
     def store(self) -> dict[str, Any]:
         if self.enabled.checkState() != Qt.PartiallyChecked:
             self.data["enabled"] = self.enabled.isChecked()
-            self.data["bypass_known"] = True
+            self.data["bypass_source"] = "user"
         self.data["alignment"] = self.alignment.currentText()
         self.data["mode"] = self.mode.currentText()
         data = self.order.currentData()
@@ -468,7 +468,7 @@ class PeqTable(QTableWidget):
         self.setRowCount(len(bands))
         for r, b in enumerate(bands):
             on = QCheckBox()
-            known = b.get("bypass_known", True)
+            known = b.get("bypass_source", "default") != "unknown"
             on.setTristate(not known)
             if known:
                 on.setCheckState(
@@ -529,7 +529,7 @@ class PeqTable(QTableWidget):
             cb = holder.findChild(QCheckBox)
             if cb.checkState() != Qt.PartiallyChecked:
                 b["enabled"] = cb.isChecked()
-                b["bypass_known"] = True
+                b["bypass_source"] = "user"
             if b.get("manual") is None:
                 b["type"] = self.cellWidget(r, 1).currentText()
                 b["freq"] = self.cellWidget(r, 2).value()
@@ -1429,6 +1429,15 @@ class MainWindow(QMainWindow):
         return False
 
     def update_warning(self):
+        unknown = core.unknown_bypass(self.project) if self.project else []
+        if unknown:
+            self.warn_label.setText(
+                f"{len(unknown)} filter state(s) unknown - import your config "
+                "to enable Apply")
+            self.warn_label.setStyleSheet(f"color: {DANGER};")
+            self.apply_btn.setEnabled(False)
+            return
+        self.apply_btn.setEnabled(True)
         if not self.have_read:
             self.warn_label.setText(
                 "Not yet read from device - Apply would overwrite it")
@@ -1493,6 +1502,25 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Read failed", msg)
 
     def on_apply(self):
+        # Bypass cannot be read back from the hardware, so if any filter's
+        # state is still unknown the app does not know what it would be
+        # writing. Refuse rather than guess: a wrong guess switches a filter
+        # on or off, and on an active crossover that reaches a driver.
+        unknown = core.unknown_bypass(self.project)
+        if unknown:
+            shown = "\n".join(f"  \u2022 {u}" for u in unknown[:10])
+            more = (f"\n  ... and {len(unknown) - 10} more"
+                    if len(unknown) > 10 else "")
+            QMessageBox.warning(
+                self, "Filter states unknown",
+                f"{len(unknown)} filter(s) were read from the hardware, which "
+                "cannot report whether a filter is bypassed.\n\n"
+                f"{shown}{more}\n\n"
+                "Import your Device Console export to load the real states, "
+                "or click each filter's enable box to set it explicitly. "
+                "Applying now would switch filters on or off at random.")
+            return
+
         if not self.have_read:
             resp = QMessageBox.warning(
                 self, "Overwrite device configuration?",
