@@ -595,9 +595,39 @@ class Readback:
                            for _, q in sections]
         return entry
 
+    def read_input(self, index: int) -> dict[str, Any]:
+        """Gain and PEQ for one input.
+
+        Inputs carry the voicing in a common house style -- flatten at the
+        input, keep the outputs as pure crossover -- so reading only outputs
+        misses everything that shapes the response.
+        """
+        spec = self.amap.inputs[index]
+        rate = self.amap.rate
+        out: dict[str, Any] = {"index": index}
+        if "gain" in spec:
+            out["gain"] = round(self.floats(spec["gain"], 1)[0], 3)
+
+        peq_addrs = spec.get("peq", [])
+        peq = []
+        if peq_addrs:
+            lo, hi = min(peq_addrs), max(peq_addrs)
+            block = self.floats(lo, hi - lo + 5)
+            for slot, addr in enumerate(peq_addrs):
+                off = addr - lo
+                coeff = self._biquads(block[off:off + 5])
+                peq.append(self._describe(coeff[0] if coeff else dict(BYPASS),
+                                          slot, rate))
+        out["peq"] = peq
+        return out
+
     def read_all(self, n_outputs: int | None = None) -> list[dict[str, Any]]:
         n = n_outputs if n_outputs is not None else len(self.amap.outputs)
         return [self.read_output(i) for i in range(min(n, len(self.amap.outputs)))]
+
+    def read_inputs(self, n_inputs: int | None = None) -> list[dict[str, Any]]:
+        n = n_inputs if n_inputs is not None else len(self.amap.inputs)
+        return [self.read_input(i) for i in range(min(n, len(self.amap.inputs)))]
 
 
 # ---------------------------------------------------------------------------
@@ -782,14 +812,49 @@ def build_config_payload(project: dict[str, Any]) -> dict[str, Any]:
     return {"inputs": inputs, "outputs": outputs}
 
 
+def _apply_peq_readback(dst_bands: list[dict[str, Any]],
+                        read_bands: list[dict[str, Any]], rate: int) -> None:
+    """Fold PEQ bands read from the hardware into a project.
+
+    Coefficients are decoded into editable parameters where the shape can be
+    inverted; raw coefficients are kept only as a fallback. Enablement is left
+    alone unless the state is unknown, in which case the band is shown as off
+    rather than asserted to be active.
+    """
+    for band in read_bands:
+        slot = band["index"]
+        if slot >= len(dst_bands):
+            break
+        dst = dst_bands[slot]
+        unknown = dst.get("bypass_source") not in ("import", "user")
+        if unknown:
+            dst["bypass_source"] = "unknown"
+        if not band.get("active"):
+            if unknown:
+                dst["enabled"] = False
+            dst["manual"] = None
+            continue
+        decoded = decode_peq(band["coeff"], rate)
+        if decoded:
+            kind, f0, q, gain = decoded
+            dst.update(type=kind, freq=round(f0, 1), q=round(q, 4),
+                       gain=round(gain, 2), manual=None)
+        else:
+            dst["manual"] = band["coeff"]
+        if unknown:
+            dst["enabled"] = False
+
+
 def apply_readback(project: dict[str, Any],
-                   readings: list[dict[str, Any]]) -> dict[str, Any]:
+                   readings: list[dict[str, Any]],
+                   inputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Fold live device readings into a project.
 
     Filters that match a standard alignment become editable designs; anything
     else is kept verbatim as manual coefficients so a round trip cannot alter
     what the hardware is doing.
     """
+    rate = int(project.get("rate", 96000))
     for r in readings:
         idx = r["index"]
         if idx >= len(project["outputs"]):
@@ -808,8 +873,12 @@ def apply_readback(project: dict[str, Any],
             # if the project has not already learned it from a config file --
             # a read should add knowledge, never destroy it.
             if dst.get("bypass_source") not in ("import", "user"):
+                # We can read the coefficients but not whether the filter is
+                # engaged. Do not claim it is: showing an unknown crossover as
+                # active draws a band-pass that may not exist. Parameters are
+                # still populated so they can be seen and resolved.
                 dst["bypass_source"] = "unknown"
-                dst["enabled"] = bool(g.get("active"))
+                dst["enabled"] = False
             if not g.get("active"):
                 dst["manual"] = None
                 continue
@@ -820,19 +889,17 @@ def apply_readback(project: dict[str, Any],
                 dst["alignment"] = "custom"
                 dst["manual"] = g["coeff"]
 
-        for band in r.get("peq", []):
-            slot = band["index"]
-            if slot >= len(out["peq"]):
-                break
-            dst = out["peq"][slot]
-            if dst.get("bypass_source") not in ("import", "user"):
-                dst["bypass_source"] = "unknown"
-            if not band.get("active"):
-                dst["enabled"] = False
-                dst["manual"] = None
-            else:
-                dst["enabled"] = True
-                dst["manual"] = band["coeff"]
+        _apply_peq_readback(out["peq"], r.get("peq", []), rate)
+
+    for r in (inputs or []):
+        idx = r["index"]
+        if idx >= len(project["inputs"]):
+            continue
+        inp = project["inputs"][idx]
+        if "gain" in r:
+            inp["gain"] = r["gain"]
+        _apply_peq_readback(inp["peq"], r.get("peq", []), rate)
+
     return project
 
 
@@ -1129,3 +1196,59 @@ def unknown_bypass(project: dict[str, Any]) -> list[str]:
                 if b.get("bypass_source", "default") == "unknown":
                     out.append(f"{name} PEQ {b.get('index', 0) + 1}")
     return out
+
+
+def decode_peq(bq: dict[str, float], rate: int):
+    """Recover (type, f0, Q, gain_db) from a PEQ biquad, or None.
+
+    Inverts the RBJ design. For a peaking section in miniDSP convention the
+    numerator's middle term mirrors the feedback one (b1 == -a1), which
+    identifies the family; then, writing t = alpha/A and p = alpha*A:
+
+        t = (1 + a2) / (1 - a2)          from the feedback terms
+        p = (b0 - b2) / (b0 + b2)        from the numerator
+        A = sqrt(p / t)                  gain,  dB = 40*log10(A)
+        alpha = sqrt(p * t)              width, Q = sin(w0) / (2*alpha)
+
+    Without this, filters read off the hardware can only be shown as raw
+    coefficients, which is useless for editing.
+    """
+    if is_bypass(bq):
+        return None
+    b0, b1, b2, a1, a2 = (bq["b0"], bq["b1"], bq["b2"], bq["a1"], bq["a2"])
+
+    shape = classify_biquad(bq)
+    if shape in ("lowpass", "highpass"):
+        d = decode_biquad(bq, rate)
+        if d:
+            return shape, d[0], (d[1] if d[1] is not None else 0.7071), 0.0
+        return None
+
+    # Peaking and notch both satisfy b1 == -a1; they differ in whether the
+    # numerator is symmetric (notch) or not (peaking with gain).
+    if abs(b1 + a1) > max(1e-6, abs(a1) * 1e-4):
+        return None
+    if abs(1.0 - a2) < 1e-12:
+        return None
+    t = (1.0 + a2) / (1.0 - a2)
+    if t <= 0:
+        return None
+    c = a1 * (1.0 + t) / 2.0
+    if not -1.0 < c < 1.0:
+        return None
+    w0 = math.acos(c)
+    if w0 <= 0:
+        return None
+    f0 = rate * w0 / (2.0 * math.pi)
+
+    denom = b0 + b2
+    if abs(denom) < 1e-15:
+        return None
+    p = (b0 - b2) / denom
+    if p <= 0:
+        return "notch", f0, math.sin(w0) / (2.0 * t), 0.0
+    A = math.sqrt(p / t)
+    alpha = math.sqrt(p * t)
+    if alpha <= 0:
+        return None
+    return "peaking", f0, math.sin(w0) / (2.0 * alpha), 40.0 * math.log10(A)

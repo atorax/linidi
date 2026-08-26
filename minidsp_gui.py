@@ -1477,12 +1477,15 @@ class MainWindow(QMainWindow):
         self.read_btn.setEnabled(False)
         self.statusBar().showMessage("Reading coefficients from device...")
         n_out = len(self.project["outputs"])
+        n_in = len(self.project["inputs"])
         self.tasks.run(
-            lambda: self.readback.read_all(n_out),
+            lambda: (self.readback.read_all(n_out),
+                     self.readback.read_inputs(n_in)),
             on_done=self._read_done, on_error=self._read_failed)
 
-    def _read_done(self, readings):
-        core.apply_readback(self.project, readings)
+    def _read_done(self, result):
+        readings, input_readings = result
+        core.apply_readback(self.project, readings, input_readings)
         self._remember_gains()
         self.have_read = True
         self.dirty = False
