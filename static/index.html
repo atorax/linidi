@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>minidsp-gui</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">
+    <strong>minidsp-gui</strong>
+    <span id="device-info" class="muted">connecting…</span>
+  </div>
+
+  <div class="master">
+    <label>Volume
+      <input type="range" id="master-volume" min="-127" max="0" step="0.5" value="-127">
+      <span id="master-volume-val" class="val">—</span>
+    </label>
+    <label>Source
+      <select id="master-source"></select>
+    </label>
+    <label>Preset
+      <select id="master-preset">
+        <option value="0">1</option>
+        <option value="1">2</option>
+        <option value="2">3</option>
+        <option value="3">4</option>
+      </select>
+    </label>
+    <button id="master-mute" class="toggle">Mute</button>
+  </div>
+
+  <div class="actions">
+    <button id="apply" class="primary">Apply to device</button>
+    <button id="panic" class="danger" title="Master mute, immediately">MUTE ALL</button>
+  </div>
+</header>
+
+<div id="status-bar" class="hidden"></div>
+
+<main>
+  <aside id="sidebar">
+    <div class="section-title">Outputs</div>
+    <ul id="output-list" class="chan-list"></ul>
+    <div class="section-title">Inputs</div>
+    <ul id="input-list" class="chan-list"></ul>
+
+    <div class="section-title">Snapshots</div>
+    <div class="snap-controls">
+      <input type="text" id="snap-name" placeholder="name">
+      <button id="snap-save">Save</button>
+    </div>
+    <ul id="snapshot-list" class="snap-list"></ul>
+  </aside>
+
+  <section id="detail">
+    <p class="muted pad">Select a channel.</p>
+  </section>
+
+  <aside id="meters">
+    <div class="section-title">Levels</div>
+    <div class="meter-group">
+      <div class="meter-label">In</div>
+      <div id="input-meters"></div>
+    </div>
+    <div class="meter-group">
+      <div class="meter-label">Out</div>
+      <div id="output-meters"></div>
+    </div>
+  </aside>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
