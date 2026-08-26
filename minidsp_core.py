@@ -611,8 +611,68 @@ def crossover_biquads(group: dict[str, Any], rate: int,
     return designed[:slots]
 
 
+def ms_to_duration(ms: float) -> dict[str, int]:
+    """Milliseconds -> the {secs, nanos} struct minidspd expects for delay."""
+    ms = max(0.0, float(ms))
+    total_ns = int(round(ms * 1_000_000))
+    return {"secs": total_ns // 1_000_000_000,
+            "nanos": total_ns % 1_000_000_000}
+
+
+def peq_coeff(band: dict[str, Any], rate: int) -> dict[str, float]:
+    """Designed coefficients for a band, regardless of its enabled state.
+
+    Whether the band is *in circuit* is carried by the separate bypass flag,
+    so the coefficients are written either way. This mirrors how Device
+    Console behaves and keeps a disable/re-enable cycle lossless.
+    """
+    if band.get("manual"):
+        return dict(band["manual"])
+    try:
+        return design_biquad(band["type"], band["freq"], band["q"],
+                             band.get("gain", 0.0), rate)
+    except (ValueError, KeyError):
+        return dict(BYPASS)
+
+
+def crossover_coeffs(group: dict[str, Any], rate: int,
+                     slots: int = 4) -> list[dict[str, float]]:
+    """All biquads of one crossover group, padded to `slots`.
+
+    Each biquad carries its own `index`, numbered 0..slots-1 *within the
+    group*. minidspd rejects the payload outright without it ("biquad index
+    not specified"), and numbering them absolutely across both groups is
+    rejected as out of range.
+    """
+    if group.get("manual"):
+        designed = [dict(b) for b in group["manual"]]
+    else:
+        try:
+            designed = design_crossover(group["mode"], group["alignment"],
+                                        int(group["order"]), group["freq"],
+                                        rate, max_biquads=slots)
+        except (ValueError, KeyError):
+            designed = []
+    designed += [dict(BYPASS)] * (slots - len(designed))
+    designed = designed[:slots]
+    for i, bq in enumerate(designed):
+        bq["index"] = i
+    return designed
+
+
 def build_config_payload(project: dict[str, Any]) -> dict[str, Any]:
-    """Whole project -> one minidspd `POST /devices/N/config` body."""
+    """Whole project -> one minidspd `POST /devices/N/config` body.
+
+    Three shapes here are not obvious and were established against the live
+    schema rather than guessed:
+
+      * `delay` is a Duration struct, not a float.
+      * A `crossover` entry is a whole *group*: `coeff` is an array of the
+        group's biquads, indexed by group, not one entry per biquad.
+      * `bypass` is writable on both crossover groups and PEQ bands. It must
+        follow the project's enabled state -- hardcoding `false` silently
+        switches on filters the user deliberately disabled.
+    """
     rate = int(project.get("rate", 96000))
     outputs = []
     for out in project["outputs"]:
@@ -621,16 +681,17 @@ def build_config_payload(project: dict[str, Any]) -> dict[str, Any]:
             "gain": float(out["gain"]),
             "mute": bool(out["mute"]),
             "invert": bool(out.get("invert", False)),
-            "delay": float(out.get("delay", 0.0)),
-            "peq": [{"index": b["index"], "bypass": False,
-                     "coeff": peq_biquad(b, rate)} for b in out["peq"]],
+            "delay": ms_to_duration(out.get("delay", 0.0)),
+            "peq": [{"index": b["index"],
+                     "bypass": not b.get("enabled", False),
+                     "coeff": peq_coeff(b, rate)} for b in out["peq"]],
+            "crossover": [
+                {"index": g["index"],
+                 "bypass": not g.get("enabled", False),
+                 "coeff": crossover_coeffs(g, rate)}
+                for g in out.get("crossover", [])
+            ],
         }
-        xover = []
-        for group in out.get("crossover", []):
-            for slot, coeff in enumerate(crossover_biquads(group, rate)):
-                xover.append({"index": group["index"] * 4 + slot,
-                              "bypass": False, "coeff": coeff})
-        entry["crossover"] = xover
         outputs.append(entry)
 
     inputs = []
@@ -639,8 +700,9 @@ def build_config_payload(project: dict[str, Any]) -> dict[str, Any]:
             "index": inp["index"],
             "gain": float(inp["gain"]),
             "mute": bool(inp["mute"]),
-            "peq": [{"index": b["index"], "bypass": False,
-                     "coeff": peq_biquad(b, rate)} for b in inp["peq"]],
+            "peq": [{"index": b["index"],
+                     "bypass": not b.get("enabled", False),
+                     "coeff": peq_coeff(b, rate)} for b in inp["peq"]],
             "routing": [{"index": r["index"], "enabled": bool(r["enabled"]),
                          "gain": float(r.get("gain", 0.0))}
                         for r in inp.get("routing", [])],
@@ -840,10 +902,23 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
             elif "coeff" in f:
                 dst["manual"] = f["coeff"]
 
+    # Routing is matched by symbol name rather than address: the generated
+    # maps record the mixer *gain* addresses, while the on/off flag lives in
+    # a separate Mixer_<in>_<out>_status entry. Device Console encodes that
+    # flag as 2 = enabled, 1 = disabled (not 1/0).
+    by_name = {name: value for name, value in items.values()}
     for idx, spec in enumerate(amap.inputs):
         if idx >= len(project["inputs"]):
             break
         inp = project["inputs"][idx]
+        for route in inp.get("routing", []):
+            key = f"Mixer_{idx}_{route['index']}_status"
+            if key in by_name:
+                route["enabled"] = int(by_name[key]) == 2
+                stats["routing"] = stats.get("routing", 0) + 1
+            gkey = f"Mixer_{idx}_{route['index']}"
+            if gkey in by_name:
+                route["gain"] = by_name[gkey]
         if "gain" in spec and spec["gain"] in items:
             inp["gain"] = items[spec["gain"]][1]
         for slot, addr in enumerate(spec.get("peq", [])):
