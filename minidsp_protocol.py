@@ -290,6 +290,15 @@ class MiniDSP:
             return buf
         return buf[1:size]                              # drop size, keep body
 
+    def command(self, cmd: int, args: Iterable[int] = ()) -> bytes:
+        """Fire-and-acknowledge. Writes reply with an ack, not an echo of the
+        command, so the reply is drained but not matched."""
+        self.send(cmd, args)
+        try:
+            return self.recv(timeout_ms=200)
+        except ProtocolError:
+            return b""
+
     def exchange(self, cmd: int, args: Iterable[int] = (),
                  retries: int = 2) -> bytes:
         """Send a command and return the reply body, minus the size byte."""
@@ -365,15 +374,15 @@ class MiniDSP:
 
     def write_float(self, addr: int, value: float,
                     mode: int = MODE_APPLY) -> None:
-        self.exchange(CMD_LOAD_DSP_PARAM,
-                      bytes([mode]) + addr_bytes(addr)
-                      + struct.pack("<f", float(value)))
+        self.command(CMD_LOAD_DSP_PARAM,
+                     bytes([mode]) + addr_bytes(addr)
+                     + struct.pack("<f", float(value)))
 
     def write_int(self, addr: int, value: int,
                   mode: int = MODE_APPLY) -> None:
-        self.exchange(CMD_LOAD_DSP_PARAM,
-                      bytes([mode]) + addr_bytes(addr)
-                      + struct.pack("<I", int(value) & 0xFFFFFFFF))
+        self.command(CMD_LOAD_DSP_PARAM,
+                     bytes([mode]) + addr_bytes(addr)
+                     + struct.pack("<I", int(value) & 0xFFFFFFFF))
 
     # -- filters ----------------------------------------------------------
 
@@ -383,26 +392,26 @@ class MiniDSP:
             raise ValueError("a biquad takes exactly 5 coefficients")
         payload = (bytes([MODE_ALT]) + addr_bytes(addr) + struct.pack(">H", 0)
                    + b"".join(struct.pack("<f", c) for c in coeffs))
-        self.exchange(CMD_SET_DSP_FILTER_BIQUADS, payload)
+        self.command(CMD_SET_DSP_FILTER_BIQUADS, payload)
 
     def set_bypass(self, addr: int, bypassed: bool) -> None:
         """Bypass a filter. The flag rides in the mode byte, not the payload."""
         payload = (bytes([0x80 if bypassed else 0x00]) + addr_bytes(addr)
                    + struct.pack(">H", 0))
-        self.exchange(CMD_BYPASS_DSP_FILTER, payload)
+        self.command(CMD_BYPASS_DSP_FILTER, payload)
 
     # -- master -----------------------------------------------------------
 
     def set_master_volume(self, db: float) -> None:
         """Master volume, in 0.5 dB steps as the device expects."""
         steps = max(0, min(255, int(round(abs(float(db)) * 2))))
-        self.exchange(CMD_MASTER_VOL, bytes([steps]))
+        self.command(CMD_MASTER_VOL, bytes([steps]))
 
     def set_master_mute(self, muted: bool) -> None:
-        self.exchange(CMD_MASTER_MUTE, bytes([1 if muted else 0]))
+        self.command(CMD_MASTER_MUTE, bytes([1 if muted else 0]))
 
     def set_source(self, index: int) -> None:
-        self.exchange(CMD_CHANGE_AUDIO_SRC, bytes([index & 0xFF]))
+        self.command(CMD_CHANGE_AUDIO_SRC, bytes([index & 0xFF]))
 
     def set_preset(self, index: int) -> None:
-        self.exchange(CMD_CHANGE_PRESET, bytes([index & 0xFF, 0]))
+        self.command(CMD_CHANGE_PRESET, bytes([index & 0xFF, 0]))

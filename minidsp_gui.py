@@ -21,9 +21,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import (QObject, QPointF, QThread, QTimer, Qt, Signal)
-from PySide6.QtGui import (QAction, QColor, QFont, QPainter, QPainterPath,
-                           QPen)
+from PySide6.QtCore import (QObject, QPointF, QRectF, QSize, QThread,
+                            QTimer, Qt, Signal)
+from PySide6.QtGui import (QAction, QColor, QFont, QIcon, QPainter,
+                           QPainterPath, QPen, QPixmap, QPolygonF)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox,
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 import minidsp_core as core
+import minidsp_native as native
 
 # --------------------------------------------------------------------------
 # Palette
@@ -69,8 +71,10 @@ QPushButton:hover {{ border-color: {ACCENT}; }}
 QPushButton:disabled {{ color: {MUTED}; }}
 QPushButton#primary {{ background: {ACCENT}; color: #06101f; font-weight: 600;
                        border-color: {ACCENT}; }}
-QPushButton#danger {{ background: {DANGER}; color: white; font-weight: 700;
-                      border-color: {DANGER}; }}
+QPushButton#danger {{ background: {PANEL2}; color: {DANGER};
+                      border: 1px solid {DANGER}; font-weight: 700;
+                      letter-spacing: .04em; padding: 5px 12px; }}
+QPushButton#danger:hover {{ background: {DANGER}; color: #ffffff; }}
 QPushButton:checked {{ background: {WARN}; color: #201800; border-color: {WARN}; }}
 QComboBox, QDoubleSpinBox, QPlainTextEdit, QListWidget, QTableWidget {{
     background: {PANEL2}; border: 1px solid {LINE}; border-radius: 4px;
@@ -90,6 +94,55 @@ QSlider::handle:horizontal {{ width: 12px; margin: -5px 0; border-radius: 6px;
                               background: {ACCENT}; }}
 QStatusBar {{ background: {PANEL}; color: {MUTED}; }}
 """
+
+
+# --------------------------------------------------------------------------
+# Icons
+# --------------------------------------------------------------------------
+
+def speaker_icon(size: int = 22, muted: bool = False,
+                 body: str = FG, slash: str = DANGER) -> QIcon:
+    """The usual speaker glyph, struck through in red when muted.
+
+    Painted rather than loaded so there is no asset to lose when the app is
+    packaged as a single file, and so it follows the palette.
+    """
+    scale = 4                                   # supersample, then smooth-scale
+    n = size * scale
+    pm = QPixmap(n, n)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(body))
+
+    # cabinet plus cone
+    p.drawRect(int(0.14 * n), int(0.38 * n), int(0.14 * n), int(0.24 * n))
+    cone = QPolygonF([
+        QPointF(0.27 * n, 0.40 * n), QPointF(0.47 * n, 0.20 * n),
+        QPointF(0.47 * n, 0.80 * n), QPointF(0.27 * n, 0.60 * n),
+    ])
+    p.drawPolygon(cone)
+
+    if not muted:
+        pen = QPen(QColor(body))
+        pen.setWidthF(0.055 * n)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        for r in (0.13, 0.23, 0.33):
+            box = QRectF((0.47 - r) * n, (0.5 - r) * n, 2 * r * n, 2 * r * n)
+            p.drawArc(box, -55 * 16, 110 * 16)
+    else:
+        pen = QPen(QColor(slash))
+        pen.setWidthF(0.10 * n)
+        pen.setCapStyle(Qt.RoundCap)
+        p.setPen(pen)
+        p.drawLine(QPointF(0.16 * n, 0.16 * n), QPointF(0.86 * n, 0.86 * n))
+
+    p.end()
+    return QIcon(pm.scaled(size, size, Qt.KeepAspectRatio,
+                           Qt.SmoothTransformation))
 
 
 # --------------------------------------------------------------------------
@@ -505,8 +558,27 @@ class PeqTable(QTableWidget):
                 sb.valueChanged.connect(self._emit)
                 self.setCellWidget(r, col, sb)
 
-            src = QTableWidgetItem("imported" if manual else "designed")
-            src.setForeground(QColor(WARN if manual else MUTED))
+            state = b.get("read_state")
+            if state == "unreadable":
+                label, colour = "not readable", DANGER
+                tip = ("The device does not report PEQ contents, so this band "
+                       "was not read.\nThe values shown are from the project, "
+                       "not from the hardware.\nImport a Device Console "
+                       "export to load the real ones.")
+            elif state == "config":
+                label, colour = "from config", ACCENT
+                tip = ("Loaded from a Device Console export. The device cannot "
+                       "report PEQ, so a config file is the authoritative "
+                       "source for these values.")
+            elif manual:
+                label, colour, tip = "imported", WARN, "Raw coefficients"
+            elif state == "read":
+                label, colour, tip = "from device", OK, "Decoded from hardware"
+            else:
+                label, colour, tip = "designed", MUTED, "Designed locally"
+            src = QTableWidgetItem(label)
+            src.setForeground(QColor(colour))
+            src.setToolTip(tip)
             src.setFlags(Qt.ItemIsEnabled)
             self.setItem(r, 5, src)
         self._loading = False
@@ -577,10 +649,14 @@ class ChainBar(QWidget):
                            self.sizePolicy().Policy.Fixed)
 
     def _clear(self):
+        # Unparent as well as delete: deleteLater() is deferred, so a widget
+        # merely taken out of the layout stays a child and keeps rendering,
+        # which stacks every previous chain on top of the current one.
         while self._lay.count():
             item = self._lay.takeAt(0)
             w = item.widget()
             if w is not None:
+                w.setParent(None)
                 w.deleteLater()
 
     def set_stages(self, stages: list[dict[str, Any]]):
@@ -1034,7 +1110,12 @@ class MasterStrip(QFrame):
         self.volume_label.setFont(QFont("monospace", 10))
         lay.addWidget(self.volume_label)
 
-        self.mute = QPushButton("Mute"); self.mute.setCheckable(True)
+        self.mute = QPushButton()
+        self.mute.setCheckable(True)
+        self.mute.setIconSize(QSize(20, 20))
+        self.mute.setFixedWidth(44)
+        self.mute.setToolTip("Master mute")
+        self._set_mute_icon(False)
         self.mute.clicked.connect(
             lambda: self._emit({"mute": self.mute.isChecked()}))
         lay.addWidget(self.mute)
@@ -1058,8 +1139,11 @@ class MasterStrip(QFrame):
 
         lay.addStretch(1)
         # Placed by the window, so status text can sit ahead of the buttons.
-        self.panic_btn = QPushButton("MUTE ALL")
+        self.panic_btn = QPushButton("  MUTE ALL")
         self.panic_btn.setObjectName("danger")
+        self.panic_btn.setIcon(speaker_icon(20, muted=True))
+        self.panic_btn.setIconSize(QSize(20, 20))
+        self.panic_btn.setToolTip("Mute the device immediately")
         self.panic_btn.clicked.connect(self.panic.emit)
 
     def add_trailing(self, *widgets, spacing: int = 0):
@@ -1068,6 +1152,9 @@ class MasterStrip(QFrame):
             self._lay.addSpacing(spacing)
         for wdg in widgets:
             self._lay.addWidget(wdg)
+
+    def _set_mute_icon(self, muted: bool):
+        self.mute.setIcon(speaker_icon(20, muted=muted))
 
     def _volume_preview(self, v):
         self.volume_label.setText(f"{v / 10.0:.1f} dB")
@@ -1086,6 +1173,7 @@ class MasterStrip(QFrame):
             self.volume.setValue(int(round(float(m.get("volume", 0.0)) * 10)))
             self._volume_preview(self.volume.value())
         self.mute.setChecked(bool(m.get("mute")))
+        self._set_mute_icon(bool(m.get("mute")))
 
         sources = status.get("available_sources") or []
         if not sources and self.source.count() == 0:
@@ -1138,7 +1226,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.opts = opts
         self.tasks = TaskRunner(self)
-        self.daemon = core.Daemon(opts.daemon, opts.device)
+        self.daemon = None        # set by connect_device()
         self.amap: core.AddressMap | None = None
         self.readback: core.Readback | None = None
         self.project: dict[str, Any] | None = None
@@ -1256,51 +1344,76 @@ class MainWindow(QMainWindow):
     # ---- setup ----
 
     def connect_device(self):
-        try:
-            devices = self.daemon.devices()
-        except core.DeviceError as exc:
-            QMessageBox.critical(
-                self, "Cannot reach minidspd",
-                f"{exc}\n\nStart it with:\n    minidspd -c <config.toml>\n\n"
-                "The daemon owns the USB connection; this app talks to it.")
-            QTimer.singleShot(0, self.close)
-            return
-        if not devices:
-            QMessageBox.critical(self, "No device",
-                                 "minidspd reports no connected devices.")
-            QTimer.singleShot(0, self.close)
-            return
+        """Open the device directly over USB, falling back to minidspd.
 
-        info = devices[min(self.opts.device, len(devices) - 1)]
-        name = info.get("product_name", "unknown")
-        ver = info.get("version", {})
-        self._topology_dsp = ver.get("dsp_version")
+        The native path needs no daemon and no external binaries, and it is
+        the one that writes routing correctly. The daemon path is kept as a
+        fallback for when USB permissions are not in place.
+        """
+        self.transport = "usb"
+        try:
+            dev = native.open_device(map_name=self.opts.map,
+                                     timeout_ms=self.opts.timeout)
+            # NativeDevice satisfies both roles the app used to split between
+            # a daemon (writes, status) and a readback helper (coefficients).
+            self.daemon = self.readback = dev
+            self.amap = dev.amap
+            info = dev.info
+            name = native.product_name(self.amap.device)
+            self._topology_dsp = info.dsp_version
+            serial = info.serial
+            rate = self.amap.rate
+        except Exception as usb_exc:                      # noqa: BLE001
+            self.transport = "daemon"
+            self.daemon = core.Daemon(self.opts.daemon, self.opts.device)
+            try:
+                devices = self.daemon.devices()
+            except core.DeviceError as exc:
+                QMessageBox.critical(
+                    self, "No device",
+                    f"Could not open the device over USB:\n  {usb_exc}\n\n"
+                    f"and minidspd is not reachable either:\n  {exc}\n\n"
+                    "Check that the device is connected and that your user "
+                    "has access to it (see the udev rule in the README).")
+                QTimer.singleShot(0, self.close)
+                return
+            if not devices:
+                QMessageBox.critical(self, "No device",
+                                     "minidspd reports no connected devices.")
+                QTimer.singleShot(0, self.close)
+                return
+            d = devices[min(self.opts.device, len(devices) - 1)]
+            name = d.get("product_name", "unknown")
+            ver = d.get("version", {})
+            self._topology_dsp = ver.get("dsp_version")
+            serial = ver.get("serial")
+            self.amap = core.AddressMap.load(name)
+            rate = self.amap.rate if self.amap else self.opts.rate
+            if self.amap:
+                self.readback = core.Readback(self.amap, cli=self.opts.cli,
+                                              tcp=self.opts.tcp)
+            else:
+                self.readback = None
+                self.read_btn.setEnabled(False)
+
         status = self.daemon.status()
         n_in = len(status.get("input_levels", []))
         n_out = len(status.get("output_levels", []))
 
-        self.amap = core.AddressMap.load(name)
-        rate = self.amap.rate if self.amap else self.opts.rate
-        if self.amap:
-            self.readback = core.Readback(
-                self.amap, cli=self.opts.cli, tcp=self.opts.tcp)
-        else:
-            self.read_btn.setEnabled(False)
-            self.read_btn.setToolTip(
-                f"No address map for '{name}'. Generate one with\n"
-                "tools/gen_address_map.py <minidsp-rs checkout>")
-
         self.master.device_label.setText(
-            f"{name}  sn {ver.get('serial')}  {n_in}in/{n_out}out  {rate} Hz")
+            f"{name}  sn {serial}  {n_in}in/{n_out}out  {rate} Hz  "
+            f"[{self.transport}]")
 
-        n_peq = len(self.amap.outputs[0].get("peq", [])) if self.amap else self.opts.peq
+        n_peq = (len(self.amap.outputs[0].get("peq", []))
+                 if self.amap and self.amap.outputs else self.opts.peq)
         self.project = self.load_project(n_in, n_out, n_peq or 10, rate)
         self.build_meters(n_in, n_out)
         self.refresh_list()
-        self.chan_list.setCurrentRow(1)     # row 0 is a section header
+        self.chan_list.setCurrentRow(1)
         self.update_warning()
         self.poll.start(500)
-        self.statusBar().showMessage(f"Connected to {name}", 4000)
+        self.statusBar().showMessage(
+            f"Connected to {name} over {self.transport}", 4000)
 
     def load_project(self, n_in, n_out, n_peq, rate):
         if self.project_path.is_file():
@@ -1702,6 +1815,10 @@ def main() -> int:
     ap.add_argument("--cli", default="minidsp",
                     help="path to the minidsp CLI binary")
     ap.add_argument("--device", type=int, default=0)
+    ap.add_argument("--map", default=None,
+                    help="address map name to use, if auto-detection fails")
+    ap.add_argument("--timeout", type=int, default=1000,
+                    help="USB command timeout in milliseconds")
     ap.add_argument("--rate", type=int, default=96000,
                     help="fallback DSP rate if no address map is available")
     ap.add_argument("--peq", type=int, default=10,

@@ -829,6 +829,18 @@ def _apply_peq_readback(dst_bands: list[dict[str, Any]],
         unknown = dst.get("bypass_source") not in ("import", "user")
         if unknown:
             dst["bypass_source"] = "unknown"
+
+        # An all-zero block means the device did not report this band at all.
+        # PEQ addresses are not served by the hardware, so the values on
+        # screen are whatever the project already held -- say so rather than
+        # letting invented defaults pass for measurements.
+        coeff = band.get("coeff") or {}
+        if all(abs(float(coeff.get(k, 0.0))) < 1e-12
+               for k in ("b0", "b1", "b2", "a1", "a2")):
+            dst["read_state"] = "unreadable"
+        else:
+            dst["read_state"] = "read"
+
         if not band.get("active"):
             if unknown:
                 dst["enabled"] = False
@@ -1020,6 +1032,7 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
             if f["bypass"]:
                 stats["bypassed"] += 1
             dst["bypass_source"] = "import"
+            dst["read_state"] = "config"
             dst["enabled"] = not f["bypass"]
             dst["manual"] = None
             if "mode" in f:
@@ -1039,6 +1052,7 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
             if f["bypass"]:
                 stats["bypassed"] += 1
             dst["bypass_source"] = "import"
+            dst["read_state"] = "config"
             dst["enabled"] = not f["bypass"]
             dst["manual"] = None
             kind = _XML_PEQ_TYPES.get(f["type"])
@@ -1077,6 +1091,7 @@ def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
                 continue
             dst = inp["peq"][slot]
             dst["bypass_source"] = "import"
+            dst["read_state"] = "config"
             dst["enabled"] = not f["bypass"]
             dst["manual"] = None
             kind = _XML_PEQ_TYPES.get(f["type"])
