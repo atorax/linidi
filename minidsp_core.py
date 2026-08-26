@@ -1218,6 +1218,25 @@ def apply_project(daemon: "Daemon", project: dict[str, Any],
     return result
 
 
+def unstable_filters(project: dict[str, Any]) -> list[str]:
+    """Bands whose coefficients describe a runaway rather than a filter.
+
+    Only enabled bands are reported: a bypassed one is not in circuit, and
+    refusing to write the rest of a configuration over a filter that is
+    switched off would be unhelpful.
+    """
+    bad = []
+    for kind in ("inputs", "outputs"):
+        for ch in project.get(kind, []):
+            for i, band in enumerate(ch.get("peq", [])):
+                if not band.get("enabled"):
+                    continue
+                bq = band.get("manual")
+                if bq and not biquad_is_stable(bq):
+                    bad.append(f"{ch.get('name', kind)} band {band.get('index', i)}")
+    return bad
+
+
 def unknown_bypass(project: dict[str, Any]) -> list[str]:
     """Filters whose bypass state the app does not actually know.
 

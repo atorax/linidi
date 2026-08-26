@@ -31,7 +31,8 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSlider,
-    QScrollArea, QStatusBar, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QStackedWidget, QStatusBar, QTableWidget, QTableWidgetItem,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -53,6 +54,7 @@ ACCENT  = "#4f9cf9"
 OK      = "#3fb950"
 WARN    = "#d29922"
 DANGER  = "#f0533f"
+TAB_ON  = "#f0883e"
 
 # One colour per PEQ band, so a band's row in the table, its own curve on the
 # plot and the marker sitting on that curve are all obviously the same filter.
@@ -166,6 +168,11 @@ QSlider::groove:horizontal {{ height: 4px; background: {PANEL2};
 QSlider::handle:horizontal {{ width: 12px; margin: -5px 0; border-radius: 6px;
                               background: {ACCENT}; }}
 QStatusBar {{ background: {PANEL}; color: {MUTED}; }}
+QPushButton#tab {{ background: transparent; border: 0; padding: 3px 2px;
+                   border-bottom: 2px solid transparent; color: {MUTED}; }}
+QPushButton#tab:hover {{ color: {FG}; }}
+QPushButton#tab:checked {{ color: {TAB_ON}; border-bottom-color: {TAB_ON};
+                           font-weight: 600; }}
 """
 
 
@@ -723,12 +730,89 @@ class CrossoverGroup(QGroupBox):
         return self.data
 
 
+def provenance_item(b: dict[str, Any]) -> QTableWidgetItem:
+    """Where a band's values came from, as a table cell.
+
+    Both tabs show this, so the rules live in one place. Hand-typed is checked
+    first: it is the most recent word on what the band is and overrides
+    wherever it originally came from, since reporting "from config" after the
+    numbers have been replaced would be stale.
+    """
+    state = b.get("read_state")
+    manual = b.get("manual") is not None
+    # Checked before anything else and regardless of where the band came
+    # from. An unstable section is not a provenance question, it is a fault,
+    # and it has to survive the table being rebuilt.
+    if manual and b.get("enabled") and not core.biquad_is_stable(b["manual"]):
+        item = QTableWidgetItem("UNSTABLE")
+        item.setForeground(QColor(DANGER))
+        item.setToolTip(
+            "The poles are on or outside the unit circle. This section would "
+            "run away rather than filter, and its output goes to a driver. "
+            "Apply refuses to write it.")
+        item.setFlags(Qt.ItemIsEnabled)
+        return item
+    if manual and b.get("manual_source") == "user":
+        label, colour = "hand-typed", WARN
+        tip = ("Coefficients typed in directly on the Biquad tab. Type, "
+               "frequency, Q and gain no longer drive this band.")
+    elif state == "unreadable":
+        label, colour = "not readable", DANGER
+        tip = ("The device does not report PEQ contents, so this band was not "
+               "read.\nThe values shown are from the project, not from the "
+               "hardware.\nImport a Device Console export to load the real ones.")
+    elif state == "config":
+        label, colour = "from config", ACCENT
+        tip = ("Loaded from a Device Console export. The device cannot report "
+               "PEQ, so a config file is the authoritative source.")
+    elif manual:
+        label, colour, tip = "imported", WARN, "Raw coefficients"
+    elif state == "read":
+        label, colour, tip = "from device", OK, "Decoded from hardware"
+    else:
+        label, colour, tip = "designed", MUTED, "Designed locally"
+    item = QTableWidgetItem(label)
+    item.setForeground(QColor(colour))
+    item.setToolTip(tip)
+    item.setFlags(Qt.ItemIsEnabled)
+    return item
+
+
+class TabStrip(QWidget):
+    """Plain text tabs: the active one is orange and carries an underline."""
+
+    selected = Signal(int)
+
+    def __init__(self, labels: list[str]):
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(2, 0, 2, 2)
+        lay.setSpacing(20)
+        self.buttons: list[QPushButton] = []
+        for i, text in enumerate(labels):
+            b = QPushButton(text)
+            b.setObjectName("tab")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFlat(True)
+            b.clicked.connect(lambda _c=False, n=i: self.select(n))
+            lay.addWidget(b)
+            self.buttons.append(b)
+        lay.addStretch(1)
+        self.buttons[0].setChecked(True)
+
+    def select(self, i: int):
+        for n, b in enumerate(self.buttons):
+            b.setChecked(n == i)
+        self.selected.emit(i)
+
+
 class PeqTable(QTableWidget):
     """Editor for a channel's PEQ bank."""
 
     changed = Signal()
-    COLS = ["#", "On", "Type", "Freq (Hz)", "Q", "Gain (dB)", "Coeff", "Source"]
-    C_NUM, C_ON, C_TYPE, C_FREQ, C_Q, C_GAIN, C_COEF, C_SRC = range(len(COLS))
+    COLS = ["#", "On", "Type", "Freq (Hz)", "Q", "Gain (dB)", "Source"]
+    C_NUM, C_ON, C_TYPE, C_FREQ, C_Q, C_GAIN, C_SRC = range(len(COLS))
 
     def __init__(self):
         super().__init__(0, len(self.COLS))
@@ -740,8 +824,6 @@ class PeqTable(QTableWidget):
         header.setSectionResizeMode(self.C_NUM, QHeaderView.Fixed)
         header.setMinimumSectionSize(26)      # else the header text sets a floor
         self.setColumnWidth(self.C_NUM, 34)
-        header.setSectionResizeMode(self.C_COEF, QHeaderView.Fixed)
-        self.setColumnWidth(self.C_COEF, 62)
         self.setSelectionMode(QTableWidget.NoSelection)
         self.bands: list[dict[str, Any]] = []
         self.rate = 96000            # set from the project by ChannelEditor
@@ -801,67 +883,8 @@ class PeqTable(QTableWidget):
                 sb.valueChanged.connect(self._emit)
                 self.setCellWidget(r, col, sb)
 
-            edit = QPushButton("edit")
-            edit.setToolTip("Show this band's five coefficients, and type "
-                            "them directly.")
-            edit.clicked.connect(lambda _c=False, row=r: self._edit_coeffs(row))
-            self.setCellWidget(r, self.C_COEF, edit)
-
-            state = b.get("read_state")
-            # Hand-typed coefficients are checked first: they are the most
-            # recent word on what this band is, and they override wherever it
-            # originally came from. Reporting a band as "from config" after
-            # its numbers have been replaced would be stale.
-            if manual and b.get("manual_source") == "user":
-                label, colour = "hand-typed", WARN
-                tip = ("Coefficients typed in directly. Type, frequency, Q "
-                       "and gain no longer drive this band -- open the "
-                       "coefficient editor to go back to a designed filter.")
-            elif state == "unreadable":
-                label, colour = "not readable", DANGER
-                tip = ("The device does not report PEQ contents, so this band "
-                       "was not read.\nThe values shown are from the project, "
-                       "not from the hardware.\nImport a Device Console "
-                       "export to load the real ones.")
-            elif state == "config":
-                label, colour = "from config", ACCENT
-                tip = ("Loaded from a Device Console export. The device cannot "
-                       "report PEQ, so a config file is the authoritative "
-                       "source for these values.")
-            elif manual:
-                label, colour, tip = "imported", WARN, "Raw coefficients"
-            elif state == "read":
-                label, colour, tip = "from device", OK, "Decoded from hardware"
-            else:
-                label, colour, tip = "designed", MUTED, "Designed locally"
-            src = QTableWidgetItem(label)
-            src.setForeground(QColor(colour))
-            src.setToolTip(tip)
-            src.setFlags(Qt.ItemIsEnabled)
-            self.setItem(r, self.C_SRC, src)
+            self.setItem(r, self.C_SRC, provenance_item(b))
         self._loading = False
-
-    def _edit_coeffs(self, r: int):
-        """Open the coefficient editor for one band and take the result."""
-        if r >= len(self.bands):
-            return
-        b = self.bands[r]
-        # Read the row before showing what it contains: the spin boxes may
-        # hold edits the band dict has not been given yet.
-        self.store()
-        designed = b.get("manual") is None
-        current = core.peq_biquad(b, self.rate)
-        dlg = BiquadDialog(self, f"Coefficients - band {b.get('index', r)}",
-                           current, self.rate, designed)
-        if not dlg.exec():
-            return
-        if dlg.revert:
-            b["manual"] = None
-        else:
-            b["manual"] = dlg.coeffs()
-            b["manual_source"] = "user"
-        self.load(self.bands)
-        self.changed.emit()
 
     def _sync_badge(self, r: int):
         """Fill or hollow a badge as its band is switched on or off."""
@@ -899,6 +922,113 @@ class PeqTable(QTableWidget):
                 b["freq"] = self.cellWidget(r, self.C_FREQ).value()
                 b["q"] = self.cellWidget(r, self.C_Q).value()
                 b["gain"] = self.cellWidget(r, self.C_GAIN).value()
+        return self.bands
+
+
+class BiquadTable(QTableWidget):
+    """The same bands as the PEQ tab, shown as the coefficients they compile to.
+
+    miniDSP adds the feedback terms rather than subtracting them, so a1 and a2
+    carry the opposite sign to the textbook form. REW's miniDSP export already
+    uses this convention, which is why its numbers paste across untouched.
+
+    Typing here makes a band manual: its coefficients stop being derived from
+    type, frequency, Q and gain, and are written as given. Designed bands show
+    what they currently compile to, so the tab doubles as a way to see what a
+    filter actually is.
+    """
+
+    changed = Signal()
+    COLS = ["#", "On", "b0", "b1", "b2", "a1", "a2", "Source"]
+    C_NUM, C_ON, C_B0, C_B1, C_B2, C_A1, C_A2, C_SRC = range(len(COLS))
+    KEYS = ("b0", "b1", "b2", "a1", "a2")
+
+    def __init__(self):
+        super().__init__(0, len(self.COLS))
+        self.setHorizontalHeaderLabels(self.COLS)
+        self.verticalHeader().setVisible(False)
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        header.setMinimumSectionSize(26)
+        header.setSectionResizeMode(self.C_NUM, QHeaderView.Fixed)
+        self.setColumnWidth(self.C_NUM, 34)
+        self.setSelectionMode(QTableWidget.NoSelection)
+        self.bands: list[dict[str, Any]] = []
+        self.rate = 96000
+        self._loading = False
+
+    def load(self, bands: list[dict[str, Any]]):
+        self._loading = True
+        self.bands = bands
+        self.setRowCount(len(bands))
+        for r, b in enumerate(bands):
+            idx = b.get("index", r)
+            badge = QLabel()
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setPixmap(peq_badge(idx, 20, bool(b.get("enabled"))))
+            badge.setToolTip(f"Band {idx}")
+            self.setCellWidget(r, self.C_NUM, badge)
+
+            on = QCheckBox()
+            known = b.get("bypass_source", "default") != "unknown"
+            on.setTristate(not known)
+            on.setCheckState(
+                (Qt.Checked if b.get("enabled") else Qt.Unchecked) if known
+                else Qt.PartiallyChecked)
+            on.clicked.connect(lambda _c=False, cb=on: PeqTable._resolve(cb))
+            on.toggled.connect(lambda _c, row=r: self._enabled_changed(row))
+            holder = QWidget(); hl = QHBoxLayout(holder)
+            hl.setContentsMargins(0, 0, 0, 0); hl.addWidget(on)
+            hl.setAlignment(Qt.AlignCenter)
+            self.setCellWidget(r, self.C_ON, holder)
+
+            # What this band compiles to today, designed or manual alike.
+            coeffs = core.peq_biquad(b, self.rate)
+            for col, key in zip((self.C_B0, self.C_B1, self.C_B2,
+                                 self.C_A1, self.C_A2), self.KEYS):
+                sb = QDoubleSpinBox()
+                sb.setRange(-64.0, 64.0)
+                sb.setDecimals(7)
+                sb.setSingleStep(0.0001)
+                sb.setValue(float(coeffs.get(key, 0.0)))
+                sb.setFont(QFont("monospace", 9))
+                # Connected after setValue, so loading does not read as editing.
+                sb.valueChanged.connect(lambda _v, row=r: self._edited(row))
+                self.setCellWidget(r, col, sb)
+
+            self.setItem(r, self.C_SRC, provenance_item(b))
+        self._loading = False
+
+    def row_coeffs(self, r: int) -> dict[str, float]:
+        return {k: self.cellWidget(r, c).value()
+                for c, k in zip((self.C_B0, self.C_B1, self.C_B2,
+                                 self.C_A1, self.C_A2), self.KEYS)}
+
+    def _enabled_changed(self, r: int):
+        if self._loading or r >= len(self.bands):
+            return
+        b = self.bands[r]
+        cb = self.cellWidget(r, self.C_ON).findChild(QCheckBox)
+        if cb.checkState() != Qt.PartiallyChecked:
+            b["enabled"] = cb.isChecked()
+            b["bypass_source"] = "user"
+        self.cellWidget(r, self.C_NUM).setPixmap(
+            peq_badge(b.get("index", r), 20, cb.checkState() == Qt.Checked))
+        self.changed.emit()
+
+    def _edited(self, r: int):
+        """A typed coefficient makes the band manual, and flags a runaway."""
+        if self._loading or r >= len(self.bands):
+            return
+        b = self.bands[r]
+        coeffs = self.row_coeffs(r)
+        b["manual"] = coeffs
+        b["manual_source"] = "user"
+        self.setItem(r, self.C_SRC, provenance_item(b))
+        self.changed.emit()
+
+    def store(self) -> list[dict[str, Any]]:
+        """Edits are written as they are made, so there is nothing to flush."""
         return self.bands
 
 
@@ -1197,19 +1327,7 @@ class ChannelEditor(QWidget):
             f"border-radius: 6px;")
         cf = QHBoxLayout(chain_frame)
         cf.setContentsMargins(8, 6, 8, 6)
-        # Every stage is a fixed width so the bar does not reflow when a value
-        # changes, but that made the bar demand ~1250px and the whole window
-        # inherit it as a minimum -- on a narrower screen the editor was cut
-        # off at the right edge with no scrollbar to say so. Scroll the bar
-        # instead: the widths stay fixed, the window does not have to be.
-        self.chain_scroll = QScrollArea()
-        self.chain_scroll.setWidget(self.chain)
-        self.chain_scroll.setWidgetResizable(True)
-        self.chain_scroll.setFrameShape(QFrame.NoFrame)
-        self.chain_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.chain_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.chain_scroll.setStyleSheet("background: transparent; border: 0;")
-        cf.addWidget(self.chain_scroll)
+        cf.addWidget(self.chain)
         root.addWidget(chain_frame)
 
         basics = QGroupBox("Channel")
@@ -1267,11 +1385,23 @@ class ChannelEditor(QWidget):
         side_l.addWidget(self.routing_box, 1)
         side_l.addStretch(0)
 
-        peq_box = QGroupBox("Parametric EQ")
+        # Two views of one set of bands: the parameters, or the coefficients
+        # they compile to. Tabs rather than a second panel, because it is the
+        # same ten filters either way.
+        peq_box = QGroupBox()
         pl = QVBoxLayout(peq_box)
+        self.peq_tabs = TabStrip(["Parametric EQ", "Biquad"])
+        self.peq_tabs.selected.connect(self._show_peq_tab)
+        pl.addWidget(self.peq_tabs)
+
         self.peq = PeqTable()
         self.peq.changed.connect(self._emit)
-        pl.addWidget(self.peq)
+        self.bq = BiquadTable()
+        self.bq.changed.connect(self._emit)
+        self.peq_stack = QStackedWidget()
+        self.peq_stack.addWidget(self.peq)
+        self.peq_stack.addWidget(self.bq)
+        pl.addWidget(self.peq_stack, 1)
         root.addWidget(peq_box, 3)
 
     def _emit(self, *_):
@@ -1296,17 +1426,30 @@ class ChannelEditor(QWidget):
         else:
             self.routing.load(chan.get("routing", []),
                               (self.project or {}).get("outputs", []))
-        self.peq.rate = int((self.project or {}).get("rate", 96000))
-        self.peq.load(chan.get("peq", []))
+        rate = int((self.project or {}).get("rate", 96000))
+        self.peq.rate = self.bq.rate = rate
+        self._active_peq().load(chan.get("peq", []))
         self._update_chain()
         self._loading = False
         self.refresh_plot()
+
+    def _active_peq(self):
+        """Whichever of the two tabs is currently showing."""
+        return self.peq_stack.currentWidget()
+
+    def _show_peq_tab(self, i: int):
+        """Swap tabs, carrying edits across rather than losing them."""
+        if self.chan is not None:
+            self.store()                       # capture the tab being left
+        self.peq_stack.setCurrentIndex(i)
+        if self.chan is not None:
+            self._active_peq().load(self.chan.get("peq", []))
 
     def _focus_stage(self, stage: str):
         """Jump to the control that owns a stage of the chain."""
         target = {
             "crossover": self.xo_groups[0].freq if self.xo_groups else None,
-            "peq": self.peq,
+            "peq": self._active_peq(),
             "routing": self.routing,
             "basics": self.gain,
         }.get(stage)
@@ -1314,7 +1457,12 @@ class ChannelEditor(QWidget):
             target.setFocus(Qt.OtherFocusReason)
 
     def _update_chain(self):
-        """Describe the signal path with live values at every stage."""
+        """The signal path this channel sits in, as a breadcrumb.
+
+        Names only. The bar used to carry each stage's current value as well,
+        which was a second copy of settings already on screen, in a strip too
+        narrow to hold them.
+        """
         if self.chan is None:
             self.chain.set_stages([])
             return
@@ -1325,19 +1473,13 @@ class ChannelEditor(QWidget):
         inputs = proj.get("inputs", [])
         stages: list[dict[str, Any]] = []
 
-        # Widest value each stage can take, so the row keeps its geometry as
-        # numbers change. Derived from the project rather than guessed, so a
-        # 10-output device or renamed channels still fit.
-        n_peq = len(self.chan.get("peq", [])) or 10
+        # Only the stages naming channels can change width, and only when a
+        # channel is renamed, so those are the only ones that need sizing.
+        # The rest are constant words.
         all_in = ", ".join(i.get("name", "In") for i in inputs) or "In 1"
         all_out = ", ".join(o.get("name", "Out") for o in outputs) or "Out 1"
         widest_name = max((c.get("name", "") for c in outputs + inputs),
                           key=len, default="Out 8")
-        eq_sizer = "EQ   " + ", ".join([str(n_peq)] * max(1, len(inputs))) + " bands"
-        route_sizer = f"routing   {len(outputs) * max(1, len(inputs))} on"
-        xo_sizer = "crossover   HP 20000 / LP 20000"
-        peq_sizer = f"PEQ   {n_peq} bands"
-        out_sizer = "out   -127.00 dB \u00b7 99.99 ms \u00b7 inverted \u00b7 MUTED"
 
         if self.is_output:
             feeding = self._feeding_inputs()
@@ -1349,24 +1491,13 @@ class ChannelEditor(QWidget):
                     "target": f"input:{first['index']}",
                     "tooltip": "Go to the input feeding this output",
                 })
-                # Several inputs are summed, not cascaded, so list counts.
-                counts = [core.count_effective_peq(i.get("peq", []))
-                          for i in feeding]
-                shown = ", ".join(str(c) for c in counts if c)
                 stages.append({
                     "label": "EQ",
-                    "detail": f"{shown} bands" if shown else "flat",
-                    "sizer": eq_sizer,
                     "target": f"input:{first['index']}",
                     "tooltip": "Input EQ, applied before the crossover split",
                 })
-                enabled_routes = sum(
-                    1 for i in feeding for r in i.get("routing", [])
-                    if r.get("enabled"))
                 stages.append({
                     "label": "routing",
-                    "detail": f"{enabled_routes} on",
-                    "sizer": route_sizer,
                     "target": f"input:{first['index']}",
                     "tooltip": "Which outputs each input feeds",
                 })
@@ -1377,27 +1508,13 @@ class ChannelEditor(QWidget):
             stages.append({"label": name, "sizer": widest_name,
                            "current": True})
 
-            xo = [g for g in self.chan.get("crossover", []) if g.get("enabled")]
-            xo_detail = " / ".join(
-                f"{'HP' if g['mode'] == 'highpass' else 'LP'} {g['freq']:.0f}"
-                for g in xo) or "off"
-            stages.append({"label": "crossover", "detail": xo_detail,
-                           "sizer": xo_sizer, "target": "focus:crossover"})
+            stages.append({"label": "crossover",
+                           "target": "focus:crossover"})
 
-            pq = core.count_effective_peq(self.chan.get("peq", []))
             stages.append({"label": "PEQ",
-                           "detail": f"{pq} bands" if pq else "flat",
-                           "sizer": peq_sizer, "target": "focus:peq"})
+                           "target": "focus:peq"})
 
-            bits = [f"{self.chan.get('gain', 0.0):+.2f} dB"]
-            if self.chan.get("delay"):
-                bits.append(f"{self.chan['delay']:.2f} ms")
-            if self.chan.get("invert"):
-                bits.append("inverted")
-            if self.chan.get("mute"):
-                bits.append("MUTED")
-            stages.append({"label": "out", "detail": " · ".join(bits),
-                           "sizer": out_sizer, "target": "focus:basics"})
+            stages.append({"label": "out", "target": "focus:basics"})
             stages.append({"label": "driver"})
         else:
             stages.append({"label": "source",
@@ -1405,17 +1522,14 @@ class ChannelEditor(QWidget):
             stages.append({"label": name, "sizer": widest_name,
                            "current": True})
 
-            pq = core.count_effective_peq(self.chan.get("peq", []))
             stages.append({"label": "EQ",
-                           "detail": f"{pq} bands" if pq else "flat",
-                           "sizer": peq_sizer, "target": "focus:peq"})
+                           "target": "focus:peq"})
 
             dests = [o for o in outputs
                      for r in self.chan.get("routing", [])
                      if r.get("index") == o.get("index") and r.get("enabled")]
             stages.append({"label": "routing",
-                           "detail": f"{len(dests)} on",
-                           "sizer": route_sizer, "target": "focus:routing"})
+                           "target": "focus:routing"})
             if dests:
                 stages.append({
                     "label": ", ".join(o["name"] for o in dests),
@@ -1439,7 +1553,10 @@ class ChannelEditor(QWidget):
             self.chan["crossover"] = [w.store() for w in self.xo_groups]
         else:
             self.chan["routing"] = self.routing.store()
-        self.chan["peq"] = self.peq.store()
+        # Only the visible tab is read. The hidden one holds widgets from
+        # whenever it was last shown, and flushing those would write stale
+        # values over edits made on the tab actually in front of the user.
+        self.chan["peq"] = self._active_peq().store()
         self.refresh_plot()
 
     def _feeding_inputs(self) -> list[dict[str, Any]]:
@@ -1696,99 +1813,6 @@ class RewDialog(QDialog):
 
     def biquads(self):
         return core.parse_rew_biquads(self.text.toPlainText())
-
-
-class BiquadDialog(QDialog):
-    """See and type one band's five coefficients.
-
-    A band is either designed -- type, frequency, Q and gain, from which the
-    coefficients follow -- or manual, a set of coefficients that came from
-    somewhere else and cannot necessarily be described by those four numbers.
-    Until now manual bands were shown with every control greyed out and the
-    numbers themselves nowhere on screen, which left filters read off the
-    hardware or imported from REW impossible to inspect, let alone adjust.
-    """
-
-    KEYS = ("b0", "b1", "b2", "a1", "a2")
-
-    def __init__(self, parent, title: str, coeffs: dict[str, float],
-                 rate: int, designed: bool):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.rate = rate
-        self.revert = False
-        lay = QVBoxLayout(self)
-
-        hint = QLabel(
-            "miniDSP adds the feedback terms, so a1 and a2 carry the opposite "
-            "sign to the textbook form. Values are used exactly as typed.")
-        hint.setObjectName("muted"); hint.setWordWrap(True)
-        lay.addWidget(hint)
-
-        form = QFormLayout()
-        self.boxes: dict[str, QDoubleSpinBox] = {}
-        for k in self.KEYS:
-            sb = QDoubleSpinBox()
-            sb.setRange(-64.0, 64.0)
-            sb.setDecimals(7)
-            sb.setSingleStep(0.0001)
-            sb.setValue(float(coeffs.get(k, 0.0)))
-            sb.setFont(QFont("monospace", 10))
-            sb.valueChanged.connect(self._recheck)
-            self.boxes[k] = sb
-            form.addRow(k, sb)
-        lay.addLayout(form)
-
-        self.report = QLabel("")
-        self.report.setWordWrap(True)
-        lay.addWidget(self.report)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.ok = buttons.button(QDialogButtonBox.Ok)
-        self.ok.setText("Use these coefficients")
-        if not designed:
-            back = buttons.addButton("Back to designed",
-                                     QDialogButtonBox.ResetRole)
-            back.setToolTip("Discard these coefficients and let the type, "
-                            "frequency, Q and gain drive this band again.")
-            back.clicked.connect(self._revert)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        lay.addWidget(buttons)
-        self._recheck()
-
-    def _revert(self):
-        self.revert = True
-        self.accept()
-
-    def coeffs(self) -> dict[str, float]:
-        return {k: self.boxes[k].value() for k in self.KEYS}
-
-    def _recheck(self):
-        """Describe what has been typed, and refuse to pass on a runaway."""
-        bq = self.coeffs()
-        stable = core.biquad_is_stable(bq)
-        self.ok.setEnabled(stable)
-        if not stable:
-            self.report.setText(
-                "Unstable: the poles are on or outside the unit circle. This "
-                "section would run away rather than filter, and its output "
-                "goes to a driver. Not writable.")
-            self.report.setStyleSheet(f"color: {DANGER};")
-            return
-
-        bits = [f"DC {core.biquad_gain_db(bq, 1.0, self.rate):+.2f} dB",
-                f"Nyquist {core.biquad_gain_db(bq, self.rate / 2 - 1, self.rate):+.2f} dB"]
-        decoded = core.decode_peq(bq, self.rate)
-        if decoded:
-            kind, f0, q, gain = decoded
-            bits.append(f"reads as {kind} {f0:.1f} Hz Q{q:.3f} {gain:+.2f} dB")
-        elif core.is_bypass(bq):
-            bits.append("passthrough: this band does nothing")
-        else:
-            bits.append("no standard shape: kept as raw coefficients")
-        self.report.setText("Stable.  " + "   ".join(bits))
-        self.report.setStyleSheet(f"color: {MUTED};")
 
 
 class MainWindow(QMainWindow):
@@ -2319,6 +2343,20 @@ class MainWindow(QMainWindow):
         # state is still unknown the app does not know what it would be
         # writing. Refuse rather than guess: a wrong guess switches a filter
         # on or off, and on an active crossover that reaches a driver.
+        # An unstable section does not filter, it runs away, and its output
+        # goes to a driver. Never write one, whatever else is in the payload.
+        unstable = core.unstable_filters(self.project)
+        if unstable:
+            QMessageBox.warning(
+                self, "Unstable filter",
+                "These bands have coefficients whose poles are on or outside "
+                "the unit circle:\n\n  "
+                + "\n  ".join(unstable[:10])
+                + "\n\nA section like that does not filter, it runs away, and "
+                  "its output goes straight to a driver. Correct them on the "
+                  "Biquad tab, or switch those bands off.")
+            return
+
         unknown = core.unknown_bypass(self.project)
         if unknown:
             shown = "\n".join(f"  \u2022 {u}" for u in unknown[:10])
