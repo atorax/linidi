@@ -196,6 +196,38 @@ def response_db(biquads: Iterable[dict[str, float]], freqs: Iterable[float],
     return out
 
 
+def response_phase(biquads: Iterable[dict[str, float]], freqs: Iterable[float],
+                   rate: int, delay_ms: float = 0.0,
+                   invert: bool = False) -> list[float]:
+    """Phase of a cascade, in degrees, wrapped to (-180, 180].
+
+    Delay and polarity are part of it, not extras: a pure delay of t seconds
+    contributes -360*f*t degrees and is exactly what the output delay control
+    is for, and an inverted output is 180 degrees away from one that is not.
+    Leaving either out would draw a phase response the hardware does not have.
+    """
+    bqs = list(biquads)
+    secs = delay_ms / 1000.0
+    out = []
+    for f in freqs:
+        w = 2.0 * math.pi * f / rate
+        z1 = complex(math.cos(-w), math.sin(-w))
+        z2 = z1 * z1
+        acc = complex(1.0, 0.0)
+        for bq in bqs:
+            den = 1.0 - bq["a1"] * z1 - bq["a2"] * z2
+            if abs(den) < 1e-20:
+                acc = 0j
+                break
+            acc *= (bq["b0"] + bq["b1"] * z1 + bq["b2"] * z2) / den
+        deg = math.degrees(math.atan2(acc.imag, acc.real)) if acc != 0 else 0.0
+        deg -= 360.0 * f * secs
+        if invert:
+            deg += 180.0
+        out.append((deg + 180.0) % 360.0 - 180.0)
+    return out
+
+
 def log_freqs(n: int = 240, lo: float = 20.0, hi: float = 20000.0) -> list[float]:
     return [lo * (hi / lo) ** (i / (n - 1)) for i in range(n)]
 

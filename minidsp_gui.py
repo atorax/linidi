@@ -452,12 +452,21 @@ class ResponsePlot(QWidget):
         super().__init__()
         self.curves: list[tuple[list[float], list[float], str, bool]] = []
         self.bands: list[dict[str, Any]] = []
+        self.phases: list[dict[str, Any]] = []
         self.freqs = core.log_freqs(280)
         self.setMinimumHeight(200)
 
     def set_curves(self, curves):
         self.curves = curves
         self.update()
+
+    def set_phases(self, phases):
+        """Phase traces, each {degs, colour, label}, on their own right axis."""
+        self.phases = phases
+        self.update()
+
+    def _py(self, deg, h):
+        return h - (deg + 180.0) / 360.0 * h
 
     def set_bands(self, bands):
         """Individual PEQ curves, each tagged with its band number.
@@ -542,7 +551,53 @@ class ResponsePlot(QWidget):
             # gone off-scale.
             p.drawPath(self._trace(dbs, w, h))
 
+        self._draw_phase(p, w, h)
         self._draw_markers(p, w, h)
+
+    def _draw_phase(self, p: QPainter, w: int, h: int):
+        """Phase traces and the right-hand degree scale they are read against.
+
+        Wrapped to +/-180 like every other phase plot, and the trace is broken
+        where it wraps rather than drawn as a vertical line across the graph,
+        which would read as a real feature.
+        """
+        if not self.phases:
+            return
+        p.setFont(QFont("monospace", 8))
+        for deg in (-180, -90, 0, 90, 180):
+            y = self._py(deg, h)
+            if deg:                       # 0 already has the magnitude rule
+                p.setPen(QPen(QColor(MINOR_GRID), 1, Qt.DotLine))
+                p.drawLine(QPointF(0, y), QPointF(w, y))
+            p.setPen(QColor(MUTED))
+            txt = f"{deg:+d}\u00b0"
+            p.drawText(QPointF(w - 4 - p.fontMetrics().horizontalAdvance(txt),
+                               max(10, y - 3)), txt)
+
+        for tr in self.phases:
+            pen = QPen(QColor(tr["colour"]))
+            pen.setWidth(1)
+            pen.setStyle(Qt.DotLine)
+            p.setPen(pen)
+            path = QPainterPath()
+            drawing = False
+            prev = None
+            mask = tr.get("mask") or [True] * len(tr["degs"])
+            for f, deg, keep in zip(self.freqs, tr["degs"], mask):
+                if not keep:
+                    drawing = False
+                    prev = None
+                    continue
+                if prev is not None and abs(deg - prev) > 180.0:
+                    drawing = False           # a wrap, not a jump in phase
+                prev = deg
+                pt = QPointF(self._fx(f, w), self._py(deg, h))
+                if drawing:
+                    path.lineTo(pt)
+                else:
+                    path.moveTo(pt)
+                    drawing = True
+            p.drawPath(path)
 
     def _trace(self, dbs, w, h) -> QPainterPath:
         """A curve, broken wherever it leaves the window.
@@ -1362,6 +1417,15 @@ class ChannelEditor(QWidget):
         # The delay label is held so it can be hidden along with its box.
         # Inputs have no delay address on this hardware, and a label with
         # nothing beside it reads as a control that has stopped working.
+        self.show_phase = QCheckBox("Phase")
+        self.show_phase.setToolTip(
+            "Overlay phase on the response, against a right-hand scale.\n"
+            "On an output this also draws whatever it crosses over with, so "
+            "the two can be compared through the overlap.")
+        self.show_phase.toggled.connect(lambda _v: self.refresh_plot())
+        bl.addWidget(self.show_phase)
+        bl.addSpacing(14)
+
         gain_label = QLabel("Gain"); gain_label.setObjectName("muted")
         self.delay_label = QLabel("Delay")
         self.delay_label.setObjectName("muted")
@@ -1620,6 +1684,8 @@ class ChannelEditor(QWidget):
                                    WARN, True))
             self.plot.set_curves(curves)
             self.plot.set_bands(self._band_curves(freqs, rate))
+            self.plot.set_phases(self._phase_curves(freqs, rate)
+                                 if self.show_phase.isChecked() else [])
 
             if not self.is_output:
                 self.legend.setText(
@@ -1631,10 +1697,78 @@ class ChannelEditor(QWidget):
                     "dashed: what the driver receives, input EQ included")
             else:
                 self.legend.setText("solid: this output's own chain")
+
+            if self.show_phase.isChecked():
+                names = [t["label"] for t in self._phase_curves(freqs, rate)]
+                extra = ("     dotted: phase, right-hand scale - "
+                         + " vs ".join(names) if len(names) > 1
+                         else "     dotted: phase, right-hand scale")
+                self.legend.setText(self.legend.text() + extra)
         except Exception:                                # noqa: BLE001
             self.plot.set_curves([])
             self.plot.set_bands([])
+            self.plot.set_phases([])
             self.legend.setText("")
+
+    def _chain_biquads(self, chan: dict[str, Any], rate: int) -> list[dict]:
+        """Every section this channel actually applies, PEQ and crossover."""
+        out = [core.peq_biquad(b, rate) for b in chan.get("peq", [])]
+        for g in chan.get("crossover", []):
+            out += [b for b in core.crossover_biquads(g, rate)
+                    if not core.is_bypass(b)]
+        return [b for b in out if not core.is_bypass(b)]
+
+    def _crossover_partners(self) -> list[dict[str, Any]]:
+        """Outputs this one crosses over with.
+
+        Anything fed by an input that also feeds this output: those are the
+        drivers whose passbands meet this one, and whose phase through the
+        overlap decides whether they sum or fight.
+        """
+        if not self.is_output or not self.project or self.chan is None:
+            return []
+        idx = self.chan.get("index")
+        feeders = [i for i in self.project.get("inputs", [])
+                   for r in i.get("routing", [])
+                   if r.get("index") == idx and r.get("enabled")]
+        partners, seen = [], {idx}
+        for inp in feeders:
+            for r in inp.get("routing", []):
+                if not r.get("enabled") or r.get("index") in seen:
+                    continue
+                for o in self.project.get("outputs", []):
+                    if o.get("index") == r.get("index"):
+                        seen.add(o["index"])
+                        partners.append(o)
+        return partners
+
+    def _phase_curves(self, freqs, rate: int) -> list[dict[str, Any]]:
+        out = []
+        for chan, colour in [(self.chan, ACCENT)] + [
+                (p, TAB_ON) for p in self._crossover_partners()]:
+            bqs = self._chain_biquads(chan, rate)
+            out.append({
+                "degs": core.response_phase(
+                    bqs, freqs, rate,
+                    delay_ms=float(chan.get("delay", 0.0) or 0.0),
+                    invert=bool(chan.get("invert"))),
+                # Phase where a channel passes nothing is not wrong, it is
+                # meaningless, and drawing it fills the plot with sweeps
+                # through bands the driver never sees. Keep the part of each
+                # trace that is in its own passband; what is left is the
+                # overlap, which is the region the question is about.
+                "mask": self._passband_mask(bqs, freqs, rate),
+                "colour": colour,
+                "label": chan.get("name", "?"),
+            })
+        return out
+
+    @staticmethod
+    def _passband_mask(bqs, freqs, rate: int, floor_db: float = 30.0):
+        """True where a chain is within `floor_db` of its own peak."""
+        mags = core.response_db(bqs, freqs, rate)
+        peak = max(mags) if mags else 0.0
+        return [m > peak - floor_db for m in mags]
 
     def _band_curves(self, freqs, rate: int) -> list[dict[str, Any]]:
         """Each PEQ band on its own, so a filter can be found on the plot.
