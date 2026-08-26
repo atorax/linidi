@@ -492,6 +492,82 @@ class PeqTable(QTableWidget):
         return self.bands
 
 
+class RoutingTable(QTableWidget):
+    """Which outputs an input feeds, and at what gain.
+
+    This is the mixer matrix: on the device, one `Mixer_<in>_<out>_status`
+    flag and one `Mixer_<in>_<out>` gain per pair. It is edited per input
+    rather than as a full grid because that matches the direction signal
+    actually travels -- one source fanning out to several drivers.
+    """
+
+    changed = Signal()
+    COLS = ["To output", "On", "Gain (dB)"]
+
+    def __init__(self):
+        super().__init__(0, len(self.COLS))
+        self.setHorizontalHeaderLabels(self.COLS)
+        self.verticalHeader().setVisible(False)
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.setSelectionMode(QTableWidget.NoSelection)
+        self.routes: list[dict[str, Any]] = []
+        self._loading = False
+
+    def load(self, routes: list[dict[str, Any]],
+             outputs: list[dict[str, Any]]):
+        self._loading = True
+        self.routes = routes
+        self.setRowCount(len(routes))
+        for r, route in enumerate(routes):
+            idx = route.get("index", r)
+            name = next((o["name"] for o in outputs
+                         if o.get("index") == idx), f"Out {idx + 1}")
+            summary = ""
+            target = next((o for o in outputs if o.get("index") == idx), None)
+            if target:
+                active = [g for g in target.get("crossover", [])
+                          if g.get("enabled")]
+                if active:
+                    summary = "  " + " / ".join(
+                        f"{'HP' if g['mode'] == 'highpass' else 'LP'} "
+                        f"{g['freq']:.0f}" for g in active)
+
+            item = QTableWidgetItem(name + summary)
+            item.setFlags(Qt.ItemIsEnabled)
+            if not route.get("enabled"):
+                item.setForeground(QColor(MUTED))
+            self.setItem(r, 0, item)
+
+            on = QCheckBox()
+            on.setChecked(bool(route.get("enabled")))
+            on.toggled.connect(self._emit)
+            holder = QWidget(); hl = QHBoxLayout(holder)
+            hl.setContentsMargins(0, 0, 0, 0); hl.addWidget(on)
+            hl.setAlignment(Qt.AlignCenter)
+            self.setCellWidget(r, 1, holder)
+
+            sb = QDoubleSpinBox()
+            sb.setRange(-127.0, 12.0); sb.setDecimals(2)
+            sb.setSingleStep(0.5); sb.setSuffix(" dB")
+            sb.setValue(float(route.get("gain", 0.0)))
+            sb.valueChanged.connect(self._emit)
+            self.setCellWidget(r, 2, sb)
+        self._loading = False
+
+    def _emit(self, *_):
+        if not self._loading:
+            self.changed.emit()
+
+    def store(self) -> list[dict[str, Any]]:
+        for r, route in enumerate(self.routes):
+            holder = self.cellWidget(r, 1)
+            if holder is None:
+                continue
+            route["enabled"] = holder.findChild(QCheckBox).isChecked()
+            route["gain"] = self.cellWidget(r, 2).value()
+        return self.routes
+
+
 class ChannelEditor(QWidget):
     """Everything for one output (or input) channel."""
 
@@ -552,6 +628,13 @@ class ChannelEditor(QWidget):
         self.xo_holder = QWidget(); self.xo_holder.setLayout(xo)
         root.addWidget(self.xo_holder)
 
+        self.routing_box = QGroupBox("Routing - outputs this input feeds")
+        rl = QVBoxLayout(self.routing_box)
+        self.routing = RoutingTable()
+        self.routing.changed.connect(self._emit)
+        rl.addWidget(self.routing)
+        root.addWidget(self.routing_box, 2)
+
         peq_box = QGroupBox("Parametric EQ")
         pl = QVBoxLayout(peq_box)
         self.peq = PeqTable()
@@ -574,9 +657,13 @@ class ChannelEditor(QWidget):
         self.mute.setChecked(bool(chan.get("mute")))
         self.invert.setChecked(bool(chan.get("invert")))
         self.xo_holder.setVisible(is_output)
+        self.routing_box.setVisible(not is_output)
         if is_output:
             for widget, group in zip(self.xo_groups, chan.get("crossover", [])):
                 widget.load(group)
+        else:
+            self.routing.load(chan.get("routing", []),
+                              (self.project or {}).get("outputs", []))
         self.peq.load(chan.get("peq", []))
         self._update_chain()
         self._loading = False
@@ -601,8 +688,11 @@ class ChannelEditor(QWidget):
             feeding = self._feeding_inputs()
             src = (", ".join(i["name"] for i in feeding) if feeding
                    else "no input routed")
-            n_eq = sum(core.count_effective_peq(i.get("peq", []))
-                       for i in feeding)
+            # Several inputs feeding one output are summed, not cascaded, so
+            # their band counts are listed separately rather than added.
+            counts = [core.count_effective_peq(i.get("peq", []))
+                      for i in feeding]
+            n_eq = ", ".join(str(c) for c in counts if c) or ""
             parts = [
                 step(src),
                 step(f"EQ ({n_eq})" if n_eq else "EQ"),
@@ -640,6 +730,8 @@ class ChannelEditor(QWidget):
             self.chan["delay"] = self.delay.value()
             self.chan["invert"] = self.invert.isChecked()
             self.chan["crossover"] = [w.store() for w in self.xo_groups]
+        else:
+            self.chan["routing"] = self.routing.store()
         self.chan["peq"] = self.peq.store()
         self.refresh_plot()
 
