@@ -962,3 +962,33 @@ def peq_is_effective(band: dict[str, Any]) -> bool:
 
 def count_effective_peq(bands: Iterable[dict[str, Any]]) -> int:
     return sum(1 for b in bands if peq_is_effective(b))
+
+
+def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
+                        target_db: float, tries: int = 3,
+                        tol: float = 0.05) -> tuple[float, int]:
+    """Set an output gain and correct for the device's own quantisation.
+
+    The Flex 8 dialect is Float32LE, so minidsp-rs writes the dB value
+    verbatim -- yet the value that comes back is always snapped to a linear
+    amplitude grid of 1/256, which puts it up to ~0.3 dB away from what was
+    asked for. The transform happens inside the device firmware, below
+    anything the protocol exposes.
+
+    Rather than model that, this closes the loop: write, read, and re-write
+    with the observed error subtracted. Two iterations land within a
+    quantisation step of the target, which is the best the hardware can do.
+
+    Returns (achieved_db, writes_performed).
+    """
+    achieved = None
+    request = float(target_db)
+    for attempt in range(1, tries + 1):
+        daemon.set_config({"outputs": [{"index": output, "gain": request}]})
+        achieved = readback.read_output(output)["gain"]
+        error = achieved - target_db
+        if abs(error) <= tol:
+            return achieved, attempt
+        # Push the request the other way by the observed error.
+        request = max(-127.0, min(0.0, request - error))
+    return achieved, tries
