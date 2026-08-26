@@ -228,25 +228,6 @@ def response_phase(biquads: Iterable[dict[str, float]], freqs: Iterable[float],
     return out
 
 
-def unwrap_deg(degs: Iterable[float]) -> list[float]:
-    """Remove the +/-360 jumps, leaving a continuous curve.
-
-    Wrapped phase hides the thing worth looking at. Changing a crossover's
-    alignment or order changes the slope of its phase, and a wrapped plot
-    chops that slope into disconnected diagonals that all look alike.
-    """
-    out, offset, prev = [], 0.0, None
-    for d in degs:
-        if prev is not None:
-            if d - prev > 180.0:
-                offset -= 360.0
-            elif d - prev < -180.0:
-                offset += 360.0
-        prev = d
-        out.append(d + offset)
-    return out
-
-
 def log_freqs(n: int = 240, lo: float = 20.0, hi: float = 20000.0) -> list[float]:
     return [lo * (hi / lo) ** (i / (n - 1)) for i in range(n)]
 
