@@ -1123,7 +1123,6 @@ class MainWindow(QMainWindow):
         self.apply_btn.setToolTip(
             "Write this project to the hardware, overwriting what is loaded.")
         self.apply_btn.clicked.connect(self.on_apply)
-        self.master.add_trailing(self.warn_label, spacing=18)
         self.master.add_trailing(self.master.panic_btn, spacing=14)
         self.master.add_trailing(self.apply_btn, spacing=8)
 
@@ -1160,6 +1159,7 @@ class MainWindow(QMainWindow):
             b = QPushButton(text); b.clicked.connect(slot); bar.addWidget(b)
 
         bar.addStretch(1)
+        bar.addWidget(self.warn_label)
         holder = QWidget(); holder.setLayout(bar)
         root.addWidget(holder)
 
