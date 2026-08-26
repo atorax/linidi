@@ -45,6 +45,7 @@ BG      = "#16181d"
 PANEL   = "#1e2128"
 PANEL2  = "#252932"
 LINE    = "#333844"
+MINOR_GRID = "#23262e"
 FG      = "#e6e8ec"
 MUTED   = "#8b93a3"
 ACCENT  = "#4f9cf9"
@@ -381,19 +382,35 @@ class ResponsePlot(QWidget):
 
         p.setFont(QFont("monospace", 8))
         grid = QPen(QColor(LINE)); grid.setWidth(1)
+        minor = QPen(QColor(MINOR_GRID)); minor.setWidth(1)
+
+        # 6 dB minor rules first, so the 12 dB majors draw over them.
+        for db in range(int(self.DB_MIN), int(self.DB_MAX) + 1, 6):
+            if db % 12 == 0:
+                continue
+            y = self._fy(db, h)
+            p.setPen(minor)
+            p.drawLine(QPointF(0, y), QPointF(w, y))
+
+        label_bottom = h - 3                       # where frequencies sit
+        for db in range(int(self.DB_MIN), int(self.DB_MAX) + 1, 12):
+            y = self._fy(db, h)
+            p.setPen(grid)
+            p.drawLine(QPointF(0, y), QPointF(w, y))
+            # The bottom rule shares its row with the frequency labels, so
+            # skip its number rather than printing two strings on top of
+            # each other.
+            if y < label_bottom - 10:
+                p.setPen(QColor(MUTED))
+                p.drawText(QPointF(3, y - 3), f"{db:+d}")
+
         for f in (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000):
             x = self._fx(f, w)
             p.setPen(grid)
             p.drawLine(QPointF(x, 0), QPointF(x, h))
             p.setPen(QColor(MUTED))
-            p.drawText(QPointF(x + 3, h - 3),
+            p.drawText(QPointF(x + 3, label_bottom),
                        f"{f // 1000}k" if f >= 1000 else str(f))
-        for db in range(int(self.DB_MIN), int(self.DB_MAX) + 1, 12):
-            y = self._fy(db, h)
-            p.setPen(grid)
-            p.drawLine(QPointF(0, y), QPointF(w, y))
-            p.setPen(QColor(MUTED))
-            p.drawText(QPointF(3, y - 3), f"{db:+d}")
 
         zero = QPen(QColor("#4a5163")); zero.setWidth(1)
         p.setPen(zero)
@@ -407,10 +424,22 @@ class ResponsePlot(QWidget):
                 pen.setStyle(Qt.DashLine)
                 pen.setWidth(1)
             p.setPen(pen)
+            # Break the trace where it leaves the window instead of clamping
+            # it: a clamped curve draws a flat line along the bottom edge,
+            # which reads as a response that is there rather than one that has
+            # gone off-scale.
             path = QPainterPath()
-            for i, (f, db) in enumerate(zip(freqs, dbs)):
-                pt = QPointF(self._fx(f, w), self._fy(db, h))
-                path.moveTo(pt) if i == 0 else path.lineTo(pt)
+            drawing = False
+            for f, db in zip(freqs, dbs):
+                if self.DB_MIN <= db <= self.DB_MAX:
+                    pt = QPointF(self._fx(f, w), self._fy(db, h))
+                    if drawing:
+                        path.lineTo(pt)
+                    else:
+                        path.moveTo(pt)
+                        drawing = True
+                else:
+                    drawing = False
             p.drawPath(path)
 
 
