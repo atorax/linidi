@@ -73,20 +73,26 @@ def open_device(map_name: str | None = None, product_id: int | None = None,
 
     Identification comes from the hardware itself, so no daemon is involved.
     """
-    probe = mp.MiniDSP(product_id=product_id, timeout_ms=timeout_ms)
+    dev = mp.MiniDSP(product_id=product_id, timeout_ms=timeout_ms)
     try:
-        info = probe.device_info()
-    finally:
-        probe.close()
-    name = map_name or map_for(info.hw_id, info.dsp_version)
-    if name is None:
-        raise mp.ProtocolError(
-            f"no address map for hw_id {info.hw_id} dsp {info.dsp_version}; "
-            f"generate one and pass its name explicitly")
-    amap = AddressMap.load(name)
-    if amap is None:
-        raise mp.ProtocolError(f"address map '{name}' not found")
-    return NativeDevice(amap, product_id=product_id, timeout_ms=timeout_ms)
+        info = dev.device_info()
+        name = map_name or map_for(info.hw_id, info.dsp_version)
+        if name is None:
+            raise mp.ProtocolError(
+                f"no address map for hw_id {info.hw_id} dsp "
+                f"{info.dsp_version}; generate one and pass its name "
+                f"explicitly")
+        amap = AddressMap.load(name)
+        if amap is None:
+            raise mp.ProtocolError(f"address map '{name}' not found")
+    except Exception:
+        dev.close()
+        raise
+    # The identified connection is handed on rather than closed and reopened.
+    # Only one process may hold this interface, so releasing it between
+    # identifying the device and using it leaves a gap for something else to
+    # claim it -- and it asked the device who it was twice.
+    return NativeDevice(amap, connection=dev, info=info)
 
 
 class NativeDevice:
@@ -98,12 +104,17 @@ class NativeDevice:
     """
 
     def __init__(self, amap: AddressMap, product_id: int | None = None,
-                 timeout_ms: int = 1000):
+                 timeout_ms: int = 1000,
+                 connection: "mp.MiniDSP | None" = None,
+                 info: "mp.DeviceInfo | None" = None):
         self.amap = amap
         self.rate = amap.rate
         self._lock = threading.Lock()
-        self._dev = mp.MiniDSP(product_id=product_id, timeout_ms=timeout_ms)
-        self.info = self._dev.device_info()
+        # open_device() passes the connection it already identified; opening
+        # one here is the path for a caller that knows which map it wants.
+        self._dev = connection or mp.MiniDSP(product_id=product_id,
+                                             timeout_ms=timeout_ms)
+        self.info = info or self._dev.device_info()
 
     def close(self) -> None:
         with self._lock:
@@ -209,6 +220,7 @@ class NativeDevice:
 
     def set_config(self, payload: dict[str, Any]) -> None:
         """Apply a project payload, in the shape the app already builds."""
+        self._check_payload(payload)
         with self._lock:
             for out in payload.get("outputs", []):
                 spec = self.amap.outputs[out["index"]]
@@ -222,8 +234,9 @@ class NativeDevice:
                 if "mute" in out and "enable" in spec:
                     self._dev.write_int(spec["enable"], _gate(out["mute"]))
 
+                peq_addrs = spec.get("peq", [])
                 for band in out.get("peq", []):
-                    addrs = spec.get("peq", [])
+                    addrs = peq_addrs
                     if band["index"] >= len(addrs):
                         continue
                     addr = addrs[band["index"]]
@@ -247,8 +260,9 @@ class NativeDevice:
                     self._dev.write_float(spec["gain"], float(inp["gain"]))
                 if "mute" in inp and "enable" in spec:
                     self._dev.write_int(spec["enable"], _gate(inp["mute"]))
+                peq_addrs = spec.get("peq", [])
                 for band in inp.get("peq", []):
-                    addrs = spec.get("peq", [])
+                    addrs = peq_addrs
                     if band["index"] >= len(addrs):
                         continue
                     addr = addrs[band["index"]]
@@ -258,13 +272,31 @@ class NativeDevice:
                 for route in inp.get("routing", []):
                     self._set_route(inp["index"], route)
 
+    def _check_payload(self, payload: dict[str, Any]) -> None:
+        """Reject a payload that does not fit this device, before writing.
+
+        A project saved against one model and applied to a smaller one used to
+        raise partway through, leaving the device half configured -- some
+        channels written, the rest not, and no record of where it stopped.
+        Checking first means the write either happens completely or not at
+        all.
+        """
+        for key, specs in (("outputs", self.amap.outputs),
+                           ("inputs", self.amap.inputs)):
+            for ch in payload.get(key, []):
+                idx = ch.get("index")
+                if not isinstance(idx, int) or not 0 <= idx < len(specs):
+                    raise mp.ProtocolError(
+                        f"payload names {key[:-1]} {idx}, but this device has "
+                        f"{len(specs)}. The project was probably saved "
+                        f"against a different model.")
+
     def _set_route(self, in_idx: int, route: dict[str, Any]) -> None:
-        """Mixer cell. Status is 2 for on and 1 for off, not 1/0."""
+        """Mixer cell, which uses the same 1-off / 2-on gate as a channel."""
         out_idx = route["index"]
         status_addr = _mixer_status_addr(self.amap, in_idx, out_idx)
         gain_addrs = self.amap.inputs[in_idx].get("routing", [])
-        if status_addr is not None:
-            self._dev.write_int(status_addr, 2 if route.get("enabled") else 1)
+        self._dev.write_int(status_addr, _gate(not route.get("enabled")))
         if out_idx < len(gain_addrs):
             self._dev.write_float(gain_addrs[out_idx],
                                   float(route.get("gain", 0.0)))
@@ -319,13 +351,20 @@ def _coeff_list(coeff: dict[str, float]) -> list[float]:
     return [float(coeff.get(k, 0.0)) for k in ("b0", "b1", "b2", "a1", "a2")]
 
 
+# No miniDSP offers anything close to ten seconds of delay, so a sample count
+# beyond this is a misread rather than a very long delay -- an address that
+# holds something other than a delay, or a reply that arrived for a different
+# one. Reporting zero is safer than reporting nonsense the UI would then draw.
+MAX_DELAY_SAMPLES = 1_000_000
+
+
 def _delay_ms(raw: float, rate: int) -> float:
     """Delay is a sample count living in the float's bit pattern."""
     try:
         samples = struct.unpack("<I", struct.pack("<f", raw))[0]
     except (struct.error, OverflowError):
         return 0.0
-    return 0.0 if samples > 1_000_000 else samples * 1000.0 / rate
+    return 0.0 if samples > MAX_DELAY_SAMPLES else samples * 1000.0 / rate
 
 
 def _delay_samples(value: Any, rate: int) -> int:

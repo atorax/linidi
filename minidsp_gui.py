@@ -2125,7 +2125,6 @@ class MainWindow(QMainWindow):
         self.dirty = False
         self.have_read = False
         self._topology_dsp: int | None = None
-        self._gains_at_read: dict[int, float] = {}
         self._last_config = None
 
         self.setWindowTitle("minidsp-gui")
@@ -2519,21 +2518,6 @@ class MainWindow(QMainWindow):
         self.refresh_list()
         self.update_warning()
 
-    def _remember_gains(self):
-        """Record gains as they currently stand on the device."""
-        self._gains_at_read = {o["index"]: float(o.get("gain", 0.0))
-                               for o in self.project["outputs"]}
-
-    def _gains_changed(self, tol: float = 0.005) -> bool:
-        """Has the user edited any gain since the last read or import?"""
-        for out in self.project["outputs"]:
-            known = self._gains_at_read.get(out["index"])
-            if known is None:
-                return True
-            if abs(float(out.get("gain", 0.0)) - known) > tol:
-                return True
-        return False
-
     def update_warning(self):
         unknown = core.unknown_bypass(self.project) if self.project else []
         if unknown:
@@ -2635,7 +2619,6 @@ class MainWindow(QMainWindow):
             except Exception as exc:                       # noqa: BLE001
                 self.statusBar().showMessage(
                     f"could not read {cfg.name}: {exc}", 8000)
-        self._remember_gains()
         self.have_read = True
         self.dirty = False
         self.read_btn.setEnabled(True)
@@ -2714,22 +2697,19 @@ class MainWindow(QMainWindow):
                 return
 
         self.apply_btn.setEnabled(False)
-        # The device snaps gain to a 1/256 linear grid, so a plain write can
-        # land up to ~0.3 dB off. Closing the loop costs extra round-trips, so
-        # only do it for gains the user has actually changed since the last
-        # read -- gains that came from the device are already where they land.
-        verify = self._gains_changed()
+        # Gain writes are always verified. The device snaps gain to a linear
+        # grid, not to the nearest step, so writing back the value it just
+        # reported moves it further down -- an unverified Apply attenuates
+        # every output a little, every time.
         project = copy.deepcopy(self.project)
         self.tasks.run(
             lambda: core.apply_project(self.daemon, project,
-                                       readback=self.readback,
-                                       verify_gains=verify),
+                                       readback=self.readback),
             on_done=self._apply_done, on_error=self._apply_failed)
 
     def _apply_done(self, _):
         self.apply_btn.setEnabled(True)
         self.dirty = False
-        self._remember_gains()
         self.update_warning()
         self.save_project()
         self.statusBar().showMessage("Applied to device", 5000)
@@ -2782,7 +2762,6 @@ class MainWindow(QMainWindow):
                 return
 
         stats = core.apply_device_console_xml(self.project, parsed, self.amap)
-        self._remember_gains()
         self.have_read = True
         self.dirty = True
         self.refresh_list()

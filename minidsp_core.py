@@ -1192,10 +1192,11 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
     """Set an output gain and correct for the device's own quantisation.
 
     The Flex 8 dialect is Float32LE, so minidsp-rs writes the dB value
-    verbatim -- yet the value that comes back is always snapped to a linear
-    amplitude grid of 1/256, which puts it up to ~0.3 dB away from what was
-    asked for. The transform happens inside the device firmware, below
-    anything the protocol exposes.
+    verbatim -- yet the value that comes back is snapped to a linear amplitude
+    grid of n/256, which puts it up to ~0.3 dB away from what was asked for.
+    The snapping is not to the nearest step and is not idempotent: reading a
+    gain and writing it straight back moves it further down. The transform
+    happens inside the device firmware, below anything the protocol exposes.
 
     Rather than model that, this closes the loop: write, read, and re-write
     with the observed error subtracted. Two iterations land within a
@@ -1218,14 +1219,26 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
 
 def apply_project(daemon: "Daemon", project: dict[str, Any],
                   readback: "Readback | None" = None,
-                  verify_gains: bool = False,
+                  verify_gains: bool = True,
                   tol: float = 0.05) -> dict[str, Any]:
-    """Push a project to the device, optionally correcting gain quantisation.
+    """Push a project to the device, correcting gain quantisation.
 
-    `verify_gains` costs two or three extra round-trips per output that misses
-    its target, so it is opt-in: it is worth doing when the user has just
-    changed a gain, and wasted when the project's gains came from readback and
-    already reflect what the hardware holds.
+    Verification used to be opt-in, on the reasoning that a gain which came
+    from readback already matched the hardware and so did not need checking.
+    That reasoning is wrong, and measurably so: writing back the value the
+    device just reported does not reproduce it. Writing -7.18 dB to an output
+    reading -7.18 dB leaves it at -7.496, and repeating the write walks it
+    down about 0.17 dB each time without converging:
+
+        wrote  -7.180 -> read  -7.496
+        wrote  -7.496 -> read  -7.659
+        wrote  -7.659 -> read  -7.824
+        wrote  -7.824 -> read  -7.993
+
+    So an Apply that skipped verification quietly attenuated every output, and
+    doing it five times cost a decibel. The closed loop below lands within a
+    quantisation step and stays there, which is worth two or three extra
+    round-trips per output.
     """
     payload = build_config_payload(project)
     daemon.set_config(payload)

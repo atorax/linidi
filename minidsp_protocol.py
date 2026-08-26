@@ -56,7 +56,11 @@ except ImportError:                                    # pragma: no cover
 VENDOR_ID = 0x2752
 REPORT_LEN = 64
 
-# Command codes, as named by the vendor's own implementation.
+# Command codes, as named by the vendor's own implementation. The whole table
+# is recorded rather than only the codes this app sends: it is the useful
+# artefact of reading Device Console, and the next person to extend this
+# should not have to derive it again. Unused entries are reference, not dead
+# code.
 CMD_RESET = 0x03
 CMD_WRITE_FLASH = 0x04
 CMD_READ_FLASH = 0x05
@@ -73,17 +77,27 @@ CMD_RELOAD_E2PROM_HDR = 0x24
 CMD_CHANGE_PRESET = 0x25
 CMD_COPY_PRESET = 0x27
 CMD_SET_DSP_FILTER_BIQUADS = 0x30
-CMD_READ_FLASH_FULL_ADDR = 0x3D
-CMD_WRITE_FLASH_FULL_ADDR = 0x3C
 CMD_PIC_VERSION = 0x31
 CMD_CHANGE_AUDIO_SRC = 0x34
 CMD_GET_NUM_FIR_TAPS = 0x39
 CMD_WRITE_FIR_TAPS_TO_FLASH = 0x3A
 CMD_RELOAD_DSP_PARAM = 0x3B
+CMD_WRITE_FLASH_FULL_ADDR = 0x3C
+CMD_READ_FLASH_FULL_ADDR = 0x3D
 CMD_BYPASS_FIR = 0x3F
 CMD_DSP_VERSION = 0x40
 CMD_MASTER_VOL = 0x42
 CMD_GEN_NOISE_CH = 0x45
+
+# How many address bytes each read command echoes back at the head of its
+# reply. Matching them is what distinguishes a real answer from a stale one
+# left in the endpoint's queue, since every reply also starts with the command
+# byte and so passes a naive check.
+READ_ECHO_BYTES = {
+    CMD_READ_FLASH: 2,
+    CMD_READ_DSP_PARAM: 2,
+    CMD_READ_FLASH_FULL_ADDR: 3,
+}
 
 # Parameter-write modes. See the module docstring: 0xa0 is the one that works.
 MODE_APPLY = 0xA0
@@ -101,6 +115,20 @@ EE_SERIAL16 = 0xFFFE          # u16 variant, big-endian, used by the Flex family
 
 class ProtocolError(RuntimeError):
     pass
+
+
+def _check_frame(data: bytes) -> None:
+    """Refuse a frame too long for one report.
+
+    Both transports used to pad with a negative repeat count, which yields an
+    empty string, and then slice back to the report length -- so an oversized
+    frame was quietly truncated and sent as a malformed packet. Nothing this
+    app builds comes close to the limit, but silently corrupting a write to
+    audio hardware is not a failure mode worth leaving in place.
+    """
+    if len(data) > REPORT_LEN:
+        raise ProtocolError(
+            f"frame of {len(data)} bytes exceeds the {REPORT_LEN}-byte report")
 
 
 def frame(cmd: int, args: Iterable[int] = ()) -> bytes:
@@ -215,8 +243,9 @@ class LibUsbTransport:
                 f"[{exc}]") from exc
 
     def write(self, data: bytes) -> None:
-        pkt = bytes(data) + b"\x00" * (REPORT_LEN - len(data))
-        self.ep_out.write(pkt[:REPORT_LEN], self.timeout_ms)
+        _check_frame(data)
+        pkt = bytes(data).ljust(REPORT_LEN, b"\x00")
+        self.ep_out.write(pkt, self.timeout_ms)
 
     def read(self, timeout_ms: int | None = None) -> bytes:
         return bytes(self.ep_in.read(REPORT_LEN,
@@ -250,9 +279,9 @@ class HidRawTransport:
         self.dev.set_nonblocking(0)
 
     def write(self, data: bytes) -> None:
+        _check_frame(data)
         # hidapi expects a leading report id byte.
-        report = b"\x00" + bytes(data) + b"\x00" * (REPORT_LEN - len(data))
-        self.dev.write(report[:REPORT_LEN + 1])
+        self.dev.write(b"\x00" + bytes(data).ljust(REPORT_LEN, b"\x00"))
 
     def read(self, timeout_ms: int | None = None) -> bytes:
         return bytes(self.dev.read(REPORT_LEN, timeout_ms or self.timeout_ms))
@@ -343,8 +372,8 @@ class MiniDSP:
     def exchange(self, cmd: int, args: Iterable[int] = (),
                  retries: int = 2) -> bytes:
         """Send a command and return the reply body, minus the size byte."""
-        expect = bytes(args)[:2] if cmd in (CMD_READ_FLASH,
-                                            CMD_READ_DSP_PARAM) else None
+        echo = READ_ECHO_BYTES.get(cmd)
+        expect = bytes(args)[:echo] if echo else None
         last = None
         for attempt in range(retries + 1):
             if attempt:
@@ -358,10 +387,11 @@ class MiniDSP:
             if reply and reply[0] == cmd:
                 # Reads echo the address; matching it rejects a stale reply
                 # that happens to share the command byte.
-                if expect is None or reply[1:3] == expect:
+                got = reply[1:1 + len(expect)] if expect else b""
+                if expect is None or got == expect:
                     return reply
                 last = ProtocolError(
-                    f"reply for {reply[1:3].hex()} while asking for "
+                    f"reply for {got.hex()} while asking for "
                     f"{expect.hex()} (stale packet)")
             else:
                 last = ProtocolError(
@@ -411,9 +441,19 @@ class MiniDSP:
     # -- memory -----------------------------------------------------------
 
     def read_memory(self, addr: int, size: int) -> bytes:
-        """Byte-addressed read (EEPROM/settings space)."""
+        """Byte-addressed read (EEPROM/settings space).
+
+        A short answer is an error here rather than a shorter result: callers
+        unpack fixed-width fields out of this, so returning what arrived would
+        surface as a struct error or an index error somewhere else entirely.
+        """
         r = self.exchange(CMD_READ_FLASH, addr_bytes(addr) + bytes([size]))
-        return r[3:3 + size]
+        body = r[3:3 + size]
+        if len(body) < size:
+            raise ProtocolError(
+                f"short read at {addr:#06x}: wanted {size} bytes, got "
+                f"{len(body)}")
+        return body
 
     def read_flash(self, addr: int, size: int) -> bytes:
         """Read the 24-bit flash space, where stored presets live.
@@ -480,8 +520,15 @@ class MiniDSP:
     # -- master -----------------------------------------------------------
 
     def set_master_volume(self, db: float) -> None:
-        """Master volume, in 0.5 dB steps as the device expects."""
-        steps = max(0, min(255, int(round(abs(float(db)) * 2))))
+        """Master volume, in 0.5 dB steps as the device expects.
+
+        The control only attenuates, and the wire value is the number of
+        half-decibels below unity. A positive argument is clamped to 0 rather
+        than run through abs(), which used to turn a request for +6 dB into
+        6 dB of cut -- the opposite of what was asked for, silently.
+        """
+        cut = -min(0.0, float(db))
+        steps = max(0, min(255, int(round(cut * 2))))
         self.command(CMD_MASTER_VOL, bytes([steps]))
 
     def set_master_mute(self, muted: bool) -> None:
