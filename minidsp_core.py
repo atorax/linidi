@@ -1267,3 +1267,91 @@ def decode_peq(bq: dict[str, float], rate: int):
     if alpha <= 0:
         return None
     return "peaking", f0, math.sin(w0) / (2.0 * alpha), 40.0 * math.log10(A)
+
+
+# ---------------------------------------------------------------------------
+# Device Console's own settings store
+# ---------------------------------------------------------------------------
+#
+# The hardware does not report PEQ, routing or bypass to anyone -- verified by
+# scanning the entire 16-bit parameter space and the populated flash regions
+# for a filter written moments earlier, which appears nowhere. Device Console
+# has no privileged access either; it simply always has a config file, written
+# beside the device serial:
+#
+#   <documents>/miniDSP/MiniDSP Device Console/<Model>/SN<nnnnn>/setting/setting<N>.xml
+#
+# Those files are the same format as a manual export, so finding one lets the
+# app populate everything the device cannot report.
+
+CONSOLE_DIR_NAMES = ("MiniDSP Device Console",)
+
+
+def _candidate_roots() -> list[Path]:
+    """Places a Device Console store might live, including mounted Windows."""
+    roots = [Path.home() / "Documents", Path.home()]
+    for base in ("/run/media", "/media", "/mnt"):
+        b = Path(base)
+        if not b.is_dir():
+            continue
+        for lvl1 in b.iterdir() if b.is_dir() else []:
+            try:
+                if not lvl1.is_dir():
+                    continue
+                roots.append(lvl1 / "Documents")
+                for lvl2 in lvl1.iterdir():
+                    if lvl2.is_dir():
+                        roots.append(lvl2 / "Documents")
+                        roots.append(lvl2 / "Users")
+            except (PermissionError, OSError):
+                continue
+    return roots
+
+
+def find_console_settings(serial: int | None = None,
+                          extra: Path | None = None) -> list[Path]:
+    """Settings directories Device Console has written, newest first.
+
+    Matches on serial when given: the store is keyed by the last digits of the
+    board serial, so 123456 lives under SN23456.
+    """
+    found: list[Path] = []
+    roots = _candidate_roots()
+    if extra:
+        roots.insert(0, Path(extra))
+    tail = f"{serial % 100000:05d}" if serial else None
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for name in CONSOLE_DIR_NAMES:
+            for base in (root / "miniDSP" / name, root / name):
+                if not base.is_dir():
+                    continue
+                try:
+                    for model in base.iterdir():
+                        if not model.is_dir():
+                            continue
+                        for sn in model.iterdir():
+                            if not sn.is_dir() or not sn.name.startswith("SN"):
+                                continue
+                            if tail and not sn.name.endswith(tail):
+                                continue
+                            setting = sn / "setting"
+                            if setting.is_dir() and any(setting.glob("*.xml")):
+                                found.append(setting)
+                except (PermissionError, OSError):
+                    continue
+    found.sort(key=lambda p: max((f.stat().st_mtime
+                                  for f in p.glob("*.xml")), default=0),
+               reverse=True)
+    return found
+
+
+def console_setting_file(settings_dir: Path, preset: int) -> Path | None:
+    """The file for a preset. Device Console numbers them from one."""
+    candidate = settings_dir / f"setting{preset + 1}.xml"
+    if candidate.is_file():
+        return candidate
+    files = sorted(settings_dir.glob("setting*.xml"))
+    return files[0] if files else None

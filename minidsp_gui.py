@@ -71,15 +71,11 @@ QPushButton:hover {{ border-color: {ACCENT}; }}
 QPushButton:disabled {{ color: {MUTED}; }}
 QPushButton#primary {{ background: {ACCENT}; color: #06101f; font-weight: 600;
                        border-color: {ACCENT}; }}
-QPushButton#danger {{ background: {PANEL2}; color: {DANGER};
+QPushButton#danger {{ background: {PANEL2}; color: #ffffff;
                       border: 1px solid {DANGER}; font-weight: 700;
                       letter-spacing: .04em; padding: 5px 12px; }}
-QPushButton#danger:hover {{ background: {DANGER}; color: #ffffff; }}
-QPushButton#danger[spent="true"] {{ background: {PANEL2}; color: {MUTED};
-                                    border-color: {LINE}; }}
-QPushButton#danger[spent="true"]:hover {{ background: {PANEL2};
-                                          color: {MUTED};
-                                          border-color: {MUTED}; }}
+QPushButton#danger:hover {{ background: #2c313c; }}
+QPushButton#danger[spent="true"] {{ color: {DANGER}; }}
 QPushButton:checked {{ background: {WARN}; color: #201800; border-color: {WARN}; }}
 QComboBox, QDoubleSpinBox, QPlainTextEdit, QListWidget, QTableWidget {{
     background: {PANEL2}; border: 1px solid {LINE}; border-radius: 4px;
@@ -105,13 +101,57 @@ QStatusBar {{ background: {PANEL}; color: {MUTED}; }}
 # Icons
 # --------------------------------------------------------------------------
 
+def asset_dir() -> Path:
+    """Where bundled assets live, in a source tree or inside a frozen build."""
+    base = getattr(sys, "_MEIPASS", None)
+    return (Path(base) if base else Path(__file__).resolve().parent) / "icons"
+
+
 def speaker_icon(size: int = 22, muted: bool = False,
                  body: str = FG, slash: str = DANGER) -> QIcon:
-    """The usual speaker glyph, struck through in red when muted.
+    """The speaker glyph for the current state.
 
-    Painted rather than loaded so there is no asset to lose when the app is
-    packaged as a single file, and so it follows the palette.
+    icons/sound.png and icons/mute.png each depict one state; there is no
+    third. Falls back to a painted glyph if the artwork is missing, so an
+    unbundled asset degrades rather than breaking the window.
     """
+    path = asset_dir() / ("mute.png" if muted else "sound.png")
+    if path.is_file():
+        pm = QPixmap(str(path))
+        if not pm.isNull():
+            return QIcon(pm.scaled(size, size, Qt.KeepAspectRatio,
+                                   Qt.SmoothTransformation))
+    return _painted_speaker_icon(size, muted, body, slash)
+
+
+def led_icon(size: int = 12, colour: str = "#000000",
+             ring: str = "#000000") -> QIcon:
+    """A small round indicator, drawn like a panel LED.
+
+    Dark when the device is passing sound and lit when it is muted, so the
+    button reads as an indicator rather than as a second mute glyph beside the
+    one that already shows state.
+    """
+    scale = 4
+    n = size * scale
+    pm = QPixmap(n, n)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(ring))
+    pen.setWidthF(max(1.0, 0.10 * n))
+    p.setPen(pen)
+    p.setBrush(QColor(colour))
+    inset = 0.14 * n
+    p.drawEllipse(QRectF(inset, inset, n - 2 * inset, n - 2 * inset))
+    p.end()
+    return QIcon(pm.scaled(size, size, Qt.KeepAspectRatio,
+                           Qt.SmoothTransformation))
+
+
+def _painted_speaker_icon(size: int, muted: bool, body: str,
+                          slash: str) -> QIcon:
+    """Fallback glyph, drawn rather than loaded."""
     scale = 4                                   # supersample, then smooth-scale
     n = size * scale
     pm = QPixmap(n, n)
@@ -1146,8 +1186,8 @@ class MasterStrip(QFrame):
         # Placed by the window, so status text can sit ahead of the buttons.
         self.panic_btn = QPushButton("  MUTE ALL")
         self.panic_btn.setObjectName("danger")
-        self.panic_btn.setIcon(speaker_icon(20, muted=True))
-        self.panic_btn.setIconSize(QSize(20, 20))
+        self.panic_btn.setIcon(led_icon(12, "#000000"))
+        self.panic_btn.setIconSize(QSize(12, 12))
         self.panic_btn.setToolTip("Mute the device immediately")
         self.panic_btn.clicked.connect(self.panic.emit)
 
@@ -1180,16 +1220,13 @@ class MasterStrip(QFrame):
         muted = bool(m.get("mute"))
         self.mute.setChecked(muted)
         self._set_mute_icon(muted)
-        # MUTE ALL sits next to a mute button that shows state, so a fixed
-        # struck-through glyph reads as a broken indicator rather than as an
-        # action. Reflect state instead: armed while sound is passing, and
-        # visibly spent once the device is already muted.
-        self.panic_btn.setIcon(speaker_icon(20, muted=True,
-                                            body=MUTED if muted else FG,
-                                            slash=MUTED if muted else DANGER))
-        self.panic_btn.setText("  MUTED" if muted else "  MUTE ALL")
+        # MUTE ALL keeps its label and signals state by colour alone: a
+        # dark LED and white text while sound is passing, both red once
+        # the device is muted. The label never changes, so the button
+        # never looks like a different control.
+        self.panic_btn.setIcon(led_icon(12, DANGER if muted else "#000000"))
         self.panic_btn.setProperty("spent", muted)
-        self.panic_btn.setToolTip("Device is muted" if muted
+        self.panic_btn.setToolTip("Click to unmute" if muted
                                   else "Mute the device immediately")
         self.panic_btn.style().unpolish(self.panic_btn)
         self.panic_btn.style().polish(self.panic_btn)
@@ -1254,6 +1291,7 @@ class MainWindow(QMainWindow):
         self.have_read = False
         self._topology_dsp: int | None = None
         self._gains_at_read: dict[int, float] = {}
+        self._last_config = None
 
         self.setWindowTitle("minidsp-gui")
         self.resize(1560, 1044)
@@ -1605,9 +1643,17 @@ class MainWindow(QMainWindow):
             on_error=lambda e: self.statusBar().showMessage(e, 6000))
 
     def on_panic(self):
+        """Toggle master mute.
+
+        The button shows state, so it has to act on state: leaving it as a
+        one-way mute would mean the lit indicator could not be cleared from
+        the control that lit it.
+        """
+        target = not self.master.mute.isChecked()
         self.tasks.run(
-            lambda: self.daemon.set_master(mute=True),
-            on_done=lambda _: self.statusBar().showMessage("MUTED", 5000),
+            lambda: self.daemon.set_master(mute=target),
+            on_done=lambda _: self.statusBar().showMessage(
+                "MUTED" if target else "unmuted", 5000),
             on_error=lambda e: self.statusBar().showMessage(e, 6000))
 
     def on_read(self):
@@ -1617,14 +1663,43 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Reading coefficients from device...")
         n_out = len(self.project["outputs"])
         n_in = len(self.project["inputs"])
-        self.tasks.run(
-            lambda: (self.readback.read_all(n_out),
-                     self.readback.read_inputs(n_in)),
-            on_done=self._read_done, on_error=self._read_failed)
+        serial = getattr(getattr(self.daemon, "info", None), "serial", None)
+        preset = 0
+        try:
+            preset = int(self.daemon.status()["master"].get("preset", 0))
+        except Exception:                                  # noqa: BLE001
+            pass
+
+        def work():
+            outs = self.readback.read_all(n_out)
+            ins = self.readback.read_inputs(n_in)
+            # The device cannot report PEQ, routing or bypass. Device Console
+            # keeps those beside the serial, in the same format as an export,
+            # so read them from there rather than leaving the panels empty.
+            cfg = None
+            for d in core.find_console_settings(serial, self.opts.console_dir):
+                f = core.console_setting_file(d, preset)
+                if f:
+                    cfg = f
+                    break
+            return outs, ins, cfg
+
+        self.tasks.run(work, on_done=self._read_done,
+                       on_error=self._read_failed)
 
     def _read_done(self, result):
-        readings, input_readings = result
+        readings, input_readings, cfg = result
         core.apply_readback(self.project, readings, input_readings)
+        self._last_config = None
+        if cfg is not None:
+            try:
+                parsed = core.parse_device_console_xml(
+                    cfg.read_text(encoding="utf-8", errors="replace"))
+                core.apply_device_console_xml(self.project, parsed, self.amap)
+                self._last_config = cfg
+            except Exception as exc:                       # noqa: BLE001
+                self.statusBar().showMessage(
+                    f"could not read {cfg.name}: {exc}", 8000)
         self._remember_gains()
         self.have_read = True
         self.dirty = False
@@ -1634,9 +1709,20 @@ class MainWindow(QMainWindow):
         self.update_warning()
         active = sum(1 for r in readings
                      for g in r.get("crossover", []) if g.get("active"))
-        self.statusBar().showMessage(
-            f"Read {len(readings)} outputs, {active} active crossover groups",
-            8000)
+        unread = len([b for ch in self.project["outputs"] + self.project["inputs"]
+                      for b in ch.get("peq", [])
+                      if b.get("read_state") == "unreadable"])
+        msg = (f"Read {len(readings)} outputs, "
+               f"{active} crossover groups from the device")
+        if self._last_config is not None:
+            msg += (f"  -  PEQ, routing and bypass loaded from "
+                    f"{self._last_config.name} (the device does not report "
+                    "them)")
+        elif unread:
+            msg += (f"  -  {unread} PEQ bands unavailable: this device reports "
+                    "neither PEQ nor routing, and no Device Console settings "
+                    "file was found. Use Import XML.")
+        self.statusBar().showMessage(msg, 15000)
 
     def _read_failed(self, msg):
         self.read_btn.setEnabled(True)
@@ -1841,6 +1927,9 @@ def main() -> int:
     ap.add_argument("--cli", default="minidsp",
                     help="path to the minidsp CLI binary")
     ap.add_argument("--device", type=int, default=0)
+    ap.add_argument("--console-dir", default=None,
+                    help="where Device Console keeps its settings, if it is "
+                         "not found automatically")
     ap.add_argument("--map", default=None,
                     help="address map name to use, if auto-detection fails")
     ap.add_argument("--timeout", type=int, default=1000,

@@ -73,6 +73,8 @@ CMD_RELOAD_E2PROM_HDR = 0x24
 CMD_CHANGE_PRESET = 0x25
 CMD_COPY_PRESET = 0x27
 CMD_SET_DSP_FILTER_BIQUADS = 0x30
+CMD_READ_FLASH_FULL_ADDR = 0x3D
+CMD_WRITE_FLASH_FULL_ADDR = 0x3C
 CMD_PIC_VERSION = 0x31
 CMD_CHANGE_AUDIO_SRC = 0x34
 CMD_GET_NUM_FIR_TAPS = 0x39
@@ -412,6 +414,18 @@ class MiniDSP:
         """Byte-addressed read (EEPROM/settings space)."""
         r = self.exchange(CMD_READ_FLASH, addr_bytes(addr) + bytes([size]))
         return r[3:3 + size]
+
+    def read_flash(self, addr: int, size: int) -> bytes:
+        """Read the 24-bit flash space, where stored presets live.
+
+        Distinct from read_memory(), which reaches only the 16-bit settings
+        window. Up to 58 bytes per call, matching the vendor's own limit.
+        """
+        size = max(1, min(int(size), 0x3A))
+        args = bytes([(addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF,
+                      size])
+        r = self.exchange(CMD_READ_FLASH_FULL_ADDR, args)
+        return r[4:4 + size] if len(r) > 4 else b""
 
     def read_floats(self, addr: int, count: int) -> list[float]:
         """DSP parameter read. The device serves at most 14 floats per call."""

@@ -13,6 +13,7 @@ MINIDSP="${MINIDSP:-$(command -v minidsp || true)}"
 MINIDSPD="${MINIDSPD:-$(command -v minidspd || true)}"
 
 args=(--onefile --name minidsp-gui --add-data "address_maps:address_maps"
+      --add-data "icons:icons"
       --add-data "NOTICE:." --add-data "LICENSE:.")
 
 if [[ -n "$MINIDSP" && -n "$MINIDSPD" ]]; then
