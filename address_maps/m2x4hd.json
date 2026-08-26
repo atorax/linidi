@@ -1,0 +1,148 @@
+{
+  "device": "m2x4hd",
+  "internal_sampling_rate": 96000,
+  "generated_from": "minidsp-rs protocol/src/device/m2x4hd.rs",
+  "note": "Addresses are float indices. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "inputs": [
+    {
+      "gain": 26,
+      "enable": 0,
+      "meter": 68,
+      "peq": [
+        8325,
+        8320,
+        8315,
+        8310,
+        8305,
+        8300,
+        8295,
+        8290,
+        8285,
+        8280
+      ],
+      "routing": [
+        32,
+        33,
+        34,
+        35
+      ]
+    },
+    {
+      "gain": 27,
+      "enable": 1,
+      "meter": 69,
+      "peq": [
+        8375,
+        8370,
+        8365,
+        8360,
+        8355,
+        8350,
+        8345,
+        8340,
+        8335,
+        8330
+      ],
+      "routing": [
+        36,
+        37,
+        38,
+        39
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "gain": 28,
+      "enable": 2,
+      "meter": 74,
+      "delay": 64,
+      "invert": 80,
+      "peq": [
+        8425,
+        8420,
+        8415,
+        8410,
+        8405,
+        8400,
+        8395,
+        8390,
+        8385,
+        8380
+      ],
+      "xover_groups": [
+        8580,
+        8600
+      ]
+    },
+    {
+      "gain": 29,
+      "enable": 3,
+      "meter": 75,
+      "delay": 65,
+      "invert": 81,
+      "peq": [
+        8475,
+        8470,
+        8465,
+        8460,
+        8455,
+        8450,
+        8445,
+        8440,
+        8435,
+        8430
+      ],
+      "xover_groups": [
+        8620,
+        8640
+      ]
+    },
+    {
+      "gain": 30,
+      "enable": 4,
+      "meter": 76,
+      "delay": 66,
+      "invert": 82,
+      "peq": [
+        8525,
+        8520,
+        8515,
+        8510,
+        8505,
+        8500,
+        8495,
+        8490,
+        8485,
+        8480
+      ],
+      "xover_groups": [
+        8660,
+        8680
+      ]
+    },
+    {
+      "gain": 31,
+      "enable": 5,
+      "meter": 77,
+      "delay": 67,
+      "invert": 83,
+      "peq": [
+        8575,
+        8570,
+        8565,
+        8560,
+        8555,
+        8550,
+        8545,
+        8540,
+        8535,
+        8530
+      ],
+      "xover_groups": [
+        8700,
+        8720
+      ]
+    }
+  ]
+}

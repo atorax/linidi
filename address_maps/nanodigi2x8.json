@@ -1,0 +1,188 @@
+{
+  "device": "nanodigi2x8",
+  "internal_sampling_rate": 96000,
+  "generated_from": "minidsp-rs protocol/src/device/nanodigi2x8.rs",
+  "note": "Addresses are float indices. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "inputs": [
+    {
+      "gain": 46,
+      "enable": 53,
+      "peq": [
+        154,
+        149,
+        144,
+        139,
+        134
+      ],
+      "routing": [
+        159,
+        163,
+        167,
+        171,
+        175,
+        179,
+        183,
+        187
+      ]
+    },
+    {
+      "gain": 47,
+      "enable": 54,
+      "peq": [
+        129,
+        124,
+        119,
+        114,
+        109
+      ],
+      "routing": [
+        160,
+        164,
+        168,
+        172,
+        176,
+        180,
+        184,
+        188
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "gain": 896,
+      "enable": 879,
+      "delay": 859,
+      "invert": 869,
+      "peq": [
+        829,
+        824,
+        819,
+        814,
+        809
+      ],
+      "xover_groups": [
+        569,
+        589
+      ]
+    },
+    {
+      "gain": 895,
+      "enable": 880,
+      "delay": 866,
+      "invert": 877,
+      "peq": [
+        629,
+        624,
+        619,
+        614,
+        609
+      ],
+      "xover_groups": [
+        529,
+        549
+      ]
+    },
+    {
+      "gain": 894,
+      "enable": 881,
+      "delay": 860,
+      "invert": 878,
+      "peq": [
+        654,
+        649,
+        644,
+        639,
+        634
+      ],
+      "xover_groups": [
+        209,
+        229
+      ]
+    },
+    {
+      "gain": 889,
+      "enable": 888,
+      "delay": 861,
+      "invert": 876,
+      "peq": [
+        854,
+        849,
+        844,
+        839,
+        834
+      ],
+      "xover_groups": [
+        489,
+        509
+      ]
+    },
+    {
+      "gain": 890,
+      "enable": 882,
+      "delay": 862,
+      "invert": 875,
+      "peq": [
+        679,
+        674,
+        669,
+        664,
+        659
+      ],
+      "xover_groups": [
+        249,
+        269
+      ]
+    },
+    {
+      "gain": 891,
+      "enable": 883,
+      "delay": 863,
+      "invert": 874,
+      "peq": [
+        704,
+        699,
+        694,
+        689,
+        684
+      ],
+      "xover_groups": [
+        289,
+        309
+      ]
+    },
+    {
+      "gain": 892,
+      "enable": 884,
+      "delay": 864,
+      "invert": 873,
+      "peq": [
+        729,
+        724,
+        719,
+        714,
+        709
+      ],
+      "xover_groups": [
+        329,
+        349
+      ]
+    },
+    {
+      "gain": 893,
+      "enable": 885,
+      "delay": 865,
+      "invert": 872,
+      "peq": [
+        754,
+        749,
+        744,
+        739,
+        734
+      ],
+      "xover_groups": [
+        369,
+        389
+      ]
+    }
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "device": "flexdl",
+  "internal_sampling_rate": 96000,
+  "generated_from": "minidsp-rs protocol/src/device/flexdl.rs",
+  "note": "Addresses are float indices. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "inputs": [
+    {
+      "gain": 8,
+      "enable": 0,
+      "meter": 16,
+      "peq": [],
+      "routing": [
+        8,
+        9,
+        10,
+        11
+      ]
+    },
+    {
+      "gain": 12,
+      "enable": 4,
+      "meter": 17,
+      "peq": [],
+      "routing": [
+        12,
+        13,
+        14,
+        15
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "gain": 34,
+      "enable": 32,
+      "meter": 28,
+      "delay": 41,
+      "invert": 45,
+      "peq": [
+        91,
+        86,
+        81,
+        76,
+        71,
+        66,
+        61,
+        56,
+        51,
+        46
+      ],
+      "xover_groups": [
+        96,
+        116
+      ]
+    },
+    {
+      "gain": 138,
+      "enable": 136,
+      "meter": 29,
+      "delay": 145,
+      "invert": 149,
+      "peq": [
+        195,
+        190,
+        185,
+        180,
+        175,
+        170,
+        165,
+        160,
+        155,
+        150
+      ],
+      "xover_groups": [
+        200,
+        220
+      ]
+    },
+    {
+      "gain": 242,
+      "enable": 240,
+      "meter": 30,
+      "delay": 249,
+      "invert": 253,
+      "peq": [
+        299,
+        294,
+        289,
+        284,
+        279,
+        274,
+        269,
+        264,
+        259,
+        254
+      ],
+      "xover_groups": [
+        304,
+        324
+      ]
+    },
+    {
+      "gain": 346,
+      "enable": 344,
+      "meter": 31,
+      "delay": 353,
+      "invert": 357,
+      "peq": [
+        403,
+        398,
+        393,
+        388,
+        383,
+        378,
+        373,
+        368,
+        363,
+        358
+      ],
+      "xover_groups": [
+        408,
+        428
+      ]
+    }
+  ]
+}
