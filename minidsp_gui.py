@@ -492,6 +492,89 @@ class PeqTable(QTableWidget):
         return self.bands
 
 
+class ChainBar(QWidget):
+    """The signal path, as real controls rather than a sentence.
+
+    Each stage is a button carrying its current value, so the bar doubles as a
+    status readout: you can see at a glance that this driver is fed by In 1
+    with 10 EQ bands, high-passed at 2600 Hz and padded 7.2 dB, and click any
+    of those to go and change it.
+    """
+
+    navigate = Signal(str, int)      # (kind, index) -> select that channel
+    focus_stage = Signal(str)        # a stage within the current channel
+
+    STAGE_CSS = f"""
+        QPushButton {{
+            background: {PANEL2}; border: 1px solid {LINE};
+            border-radius: 5px; padding: 4px 9px; text-align: left;
+            color: {FG};
+        }}
+        QPushButton:hover {{ border-color: {ACCENT}; background: #2c313c; }}
+        QPushButton:disabled {{ color: {MUTED}; background: transparent;
+                                border-color: transparent; }}
+    """
+    CURRENT_CSS = f"""
+        QPushButton {{
+            background: {ACCENT}; border: 1px solid {ACCENT};
+            border-radius: 5px; padding: 4px 9px; color: #06101f;
+            font-weight: 700;
+        }}
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._lay = QHBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(4)
+        self.setSizePolicy(self.sizePolicy().horizontalPolicy(),
+                           self.sizePolicy().Policy.Fixed)
+
+    def _clear(self):
+        while self._lay.count():
+            item = self._lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+    def set_stages(self, stages: list[dict[str, Any]]):
+        """stages: {label, detail, target, current, enabled}"""
+        self._clear()
+        for i, st in enumerate(stages):
+            if i:
+                arrow = QLabel("→")
+                arrow.setStyleSheet(f"color: {LINE}; font-size: 15px;")
+                self._lay.addWidget(arrow)
+
+            label = st["label"]
+            detail = st.get("detail")
+            btn = QPushButton(f"{label}   {detail}" if detail else label)
+            btn.setCursor(Qt.PointingHandCursor if st.get("target")
+                          else Qt.ArrowCursor)
+            btn.setFlat(True)
+            if st.get("current"):
+                btn.setStyleSheet(self.CURRENT_CSS)
+                btn.setEnabled(False)
+            else:
+                btn.setStyleSheet(self.STAGE_CSS)
+                btn.setEnabled(bool(st.get("target")))
+            if st.get("tooltip"):
+                btn.setToolTip(st["tooltip"])
+            target = st.get("target")
+            if target:
+                btn.clicked.connect(
+                    lambda _=False, t=target: self._activate(t))
+            self._lay.addWidget(btn)
+        self._lay.addStretch(1)
+
+    def _activate(self, target: str):
+        kind, _, value = target.partition(":")
+        if kind in ("input", "output"):
+            self.navigate.emit(kind, int(value))
+        else:
+            self.focus_stage.emit(value)
+
+
 class RoutingTable(QTableWidget):
     """Which outputs an input feeds, and at what gain.
 
@@ -572,6 +655,7 @@ class ChannelEditor(QWidget):
     """Everything for one output (or input) channel."""
 
     changed = Signal()
+    navigate = Signal(str, int)      # (kind, index) from a chain link
 
     def __init__(self):
         super().__init__()
@@ -584,12 +668,17 @@ class ChannelEditor(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
 
         # Where this channel sits in the signal path.
-        self.chain = QLabel("")
-        self.chain.setTextFormat(Qt.RichText)
-        self.chain.setStyleSheet(
+        self.chain = ChainBar()
+        self.chain.navigate.connect(self.navigate.emit)
+        self.chain.focus_stage.connect(self._focus_stage)
+        chain_frame = QFrame()
+        chain_frame.setStyleSheet(
             f"background: {PANEL}; border: 1px solid {LINE}; "
-            f"border-radius: 6px; padding: 7px 10px; font-size: 12px;")
-        root.addWidget(self.chain)
+            f"border-radius: 6px;")
+        cf = QHBoxLayout(chain_frame)
+        cf.setContentsMargins(8, 6, 8, 6)
+        cf.addWidget(self.chain)
+        root.addWidget(chain_frame)
 
         basics = QGroupBox("Channel")
         bl = QHBoxLayout(basics)
@@ -669,57 +758,110 @@ class ChannelEditor(QWidget):
         self._loading = False
         self.refresh_plot()
 
+    def _focus_stage(self, stage: str):
+        """Jump to the control that owns a stage of the chain."""
+        target = {
+            "crossover": self.xo_groups[0].freq if self.xo_groups else None,
+            "peq": self.peq,
+            "routing": self.routing,
+            "basics": self.gain,
+        }.get(stage)
+        if target is not None:
+            target.setFocus(Qt.OtherFocusReason)
+
     def _update_chain(self):
-        """Render the signal path, highlighting the current stage."""
+        """Describe the signal path with live values at every stage."""
         if self.chan is None:
-            self.chain.setText("")
+            self.chain.set_stages([])
             return
 
-        def step(text, here=False):
-            if here:
-                return (f"<span style='color:{ACCENT}; font-weight:600'>"
-                        f"{text}</span>")
-            return f"<span style='color:{MUTED}'>{text}</span>"
-
-        arrow = f"<span style='color:{LINE}'> &#8594; </span>"
         name = self.chan.get("name", "")
+        outputs = (self.project or {}).get("outputs", [])
+        stages: list[dict[str, Any]] = []
 
         if self.is_output:
             feeding = self._feeding_inputs()
-            src = (", ".join(i["name"] for i in feeding) if feeding
-                   else "no input routed")
-            # Several inputs feeding one output are summed, not cascaded, so
-            # their band counts are listed separately rather than added.
-            counts = [core.count_effective_peq(i.get("peq", []))
-                      for i in feeding]
-            n_eq = ", ".join(str(c) for c in counts if c) or ""
-            parts = [
-                step(src),
-                step(f"EQ ({n_eq})" if n_eq else "EQ"),
-                step("routing"),
-                step(name, here=True),
-                step("crossover"),
-                step("PEQ"),
-                step("gain / delay"),
-                step("driver"),
-            ]
+            if feeding:
+                first = feeding[0]
+                stages.append({
+                    "label": ", ".join(i["name"] for i in feeding),
+                    "target": f"input:{first['index']}",
+                    "tooltip": "Go to the input feeding this output",
+                })
+                # Several inputs are summed, not cascaded, so list counts.
+                counts = [core.count_effective_peq(i.get("peq", []))
+                          for i in feeding]
+                shown = ", ".join(str(c) for c in counts if c)
+                stages.append({
+                    "label": "EQ",
+                    "detail": f"{shown} bands" if shown else "flat",
+                    "target": f"input:{first['index']}",
+                    "tooltip": "Input EQ, applied before the crossover split",
+                })
+                enabled_routes = sum(
+                    1 for i in feeding for r in i.get("routing", [])
+                    if r.get("enabled"))
+                stages.append({
+                    "label": "routing",
+                    "detail": f"{enabled_routes} on",
+                    "target": f"input:{first['index']}",
+                    "tooltip": "Which outputs each input feeds",
+                })
+            else:
+                stages.append({"label": "no input routed",
+                               "tooltip": "Nothing is routed to this output"})
+
+            stages.append({"label": name, "current": True})
+
+            xo = [g for g in self.chan.get("crossover", []) if g.get("enabled")]
+            xo_detail = " / ".join(
+                f"{'HP' if g['mode'] == 'highpass' else 'LP'} {g['freq']:.0f}"
+                for g in xo) or "off"
+            stages.append({"label": "crossover", "detail": xo_detail,
+                           "target": "focus:crossover"})
+
+            pq = core.count_effective_peq(self.chan.get("peq", []))
+            stages.append({"label": "PEQ",
+                           "detail": f"{pq} bands" if pq else "flat",
+                           "target": "focus:peq"})
+
+            bits = [f"{self.chan.get('gain', 0.0):+.2f} dB"]
+            if self.chan.get("delay"):
+                bits.append(f"{self.chan['delay']:.2f} ms")
+            if self.chan.get("invert"):
+                bits.append("inverted")
+            if self.chan.get("mute"):
+                bits.append("MUTED")
+            stages.append({"label": "out", "detail": " · ".join(bits),
+                           "target": "focus:basics"})
+            stages.append({"label": "driver"})
         else:
-            idx = self.chan.get("index")
-            outs = [o["name"] for o in (self.project or {}).get("outputs", [])
-                    for r in self.chan.get("routing", [])
-                    if r.get("index") == o.get("index")
-                    and r.get("enabled") and self.chan.get("index") == idx]
-            dest = ", ".join(outs) if outs else "not routed"
-            parts = [
-                step("source"),
-                step(name, here=True),
-                step("EQ"),
-                step("routing"),
-                step(dest),
-                step("crossover"),
-                step("driver"),
-            ]
-        self.chain.setText(arrow.join(parts))
+            stages.append({"label": "source",
+                           "tooltip": "Selected on the master strip above"})
+            stages.append({"label": name, "current": True})
+
+            pq = core.count_effective_peq(self.chan.get("peq", []))
+            stages.append({"label": "EQ",
+                           "detail": f"{pq} bands" if pq else "flat",
+                           "target": "focus:peq"})
+
+            dests = [o for o in outputs
+                     for r in self.chan.get("routing", [])
+                     if r.get("index") == o.get("index") and r.get("enabled")]
+            stages.append({"label": "routing",
+                           "detail": f"{len(dests)} on",
+                           "target": "focus:routing"})
+            if dests:
+                stages.append({
+                    "label": ", ".join(o["name"] for o in dests),
+                    "target": f"output:{dests[0]['index']}",
+                    "tooltip": "Go to the first output this input feeds",
+                })
+            else:
+                stages.append({"label": "not routed"})
+            stages.append({"label": "driver"})
+
+        self.chain.set_stages(stages)
 
     def store(self):
         if self.chan is None:
@@ -1003,6 +1145,7 @@ class MainWindow(QMainWindow):
 
         self.editor = ChannelEditor()
         self.editor.changed.connect(self.on_edit)
+        self.editor.navigate.connect(self.on_navigate)
         splitter.addWidget(self.editor)
 
         meters = QWidget()
@@ -1175,6 +1318,13 @@ class MainWindow(QMainWindow):
             self.editor.project = self.project
             self.editor.load(chan, is_out)
             self.editor.refresh_plot(int(self.project.get("rate", 96000)))
+
+    def on_navigate(self, kind: str, index: int):
+        """Select a channel because a chain stage was clicked."""
+        for row in range(self.chan_list.count()):
+            if self.chan_list.item(row).data(Qt.UserRole) == (kind, index):
+                self.chan_list.setCurrentRow(row)
+                return
 
     def on_edit(self):
         self.dirty = True
