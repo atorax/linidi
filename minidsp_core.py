@@ -63,19 +63,30 @@ ALIGNMENTS = ("linkwitz-riley", "butterworth", "bessel")
 
 # Bessel sections as (Q, frequency ratio), normalised so the cascade is -3 dB
 # at the corner. Unlike Butterworth and Linkwitz-Riley, whose sections all sit
-# at the same frequency, a Bessel's sections are spread: keeping only the Q
-# values and designing every section at the corner produced a filter that was
-# -4.8 dB at its corner for order 2 and -12.2 dB for order 8, worsening with
-# order, and was not a Bessel response at all.
+# at the same frequency, a Bessel's are spread.
+#
+# Derived from the reverse Bessel polynomial rather than transcribed: its roots
+# give the poles, each conjugate pair becomes a section of Q = |p| / 2|Re p| at
+# w0 = |p|, and the whole set is scaled so the cascade is -3 dB at 1. An
+# earlier transcription had Q values that were right and ratios that were not,
+# which passed a check at the corner and was up to 17 dB adrift in the
+# stopband at 8th order -- so this is checked against the analog response
+# across the band, not just at the corner.
 BESSEL_SECTIONS: dict[int, list[tuple[float, float]]] = {
-    2: [(0.5773, 1.2723)],
-    4: [(0.5219, 1.4192), (0.8055, 1.5912)],
-    6: [(0.5103, 1.6060), (0.6112, 1.6913), (1.0234, 1.9071)],
-    8: [(0.5060, 1.7837), (0.5596, 1.8376),
-        (0.7109, 1.9591), (1.2258, 2.1953)],
+    2: [(0.5774, 1.2720)],
+    3: [(0.6910, 1.3384)],
+    4: [(0.5219, 1.5196), (0.8055, 1.3554)],
+    5: [(0.5635, 1.5305), (0.9165, 1.3569)],
+    6: [(0.5103, 1.6065), (0.6112, 1.5255), (1.0233, 1.3528)],
+    7: [(0.5324, 1.6081), (0.6608, 1.5145), (1.1263, 1.3467)],
+    8: [(0.5060, 1.6491), (0.5596, 1.6008),
+        (0.7109, 1.5016), (1.2257, 1.3400)],
 }
 
-# Q values alone, which is what identification matches on.
+# An odd order has one real pole as well, which becomes a 1st-order section at
+# this ratio.
+BESSEL_FIRST: dict[int, float] = {3: 1.4648, 5: 1.5855, 7: 1.6386}
+
 BESSEL_Q = {order: [q for q, _ in secs]
             for order, secs in BESSEL_SECTIONS.items()}
 
@@ -196,10 +207,14 @@ def design_crossover(mode: str, alignment: str, order: int, freq: float,
             out.append(_first_order(mode, freq, rate))
     elif alignment == "bessel":
         if order not in BESSEL_SECTIONS:
-            raise ValueError("bessel supports even orders 2-8")
+            raise ValueError("bessel supports orders 2-8")
         out += [design_biquad(mode, bessel_section_freq(freq, ratio, mode),
                               q, 0.0, rate)
                 for q, ratio in BESSEL_SECTIONS[order]]
+        if order in BESSEL_FIRST:
+            out.append(_first_order(
+                mode, bessel_section_freq(freq, BESSEL_FIRST[order], mode),
+                rate))
     else:
         raise ValueError(f"unknown alignment: {alignment}")
 
@@ -452,10 +467,13 @@ def identify_alignment(sections: list[tuple[float, float]]) -> tuple[str, int]:
         if order in BESSEL_Q and matches(qs, BESSEL_Q[order]):
             return "bessel", order
     else:
-        # Mixed: an odd-order Butterworth is 1st-order plus biquads.
+        # Mixed: an odd-order Butterworth or Bessel is 1st-order plus biquads.
         bw, bw_first = butterworth_qs(order)
         if bw_first and n_first == 1 and matches(qs, bw):
             return "butterworth", order
+        if (n_first == 1 and order in BESSEL_FIRST
+                and matches(qs, BESSEL_Q[order])):
+            return "bessel", order
 
     return "custom", order
 

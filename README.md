@@ -212,7 +212,11 @@ Things that cost real debugging time:
   channel mute gates. Take them from the device profile.
 - **Bessel sections are not all at the corner frequency.** Each has its own
   ratio, and designing them all at the corner gives a cascade that is -4.8 dB
-  at its own corner at 2nd order and -12.2 dB at 8th.
+  at its own corner at 2nd order and -12.2 dB at 8th. Derive the ratios from
+  the reverse Bessel polynomial rather than transcribing a table, and check
+  the result against the analog response across the band: a set with correct
+  Q values and wrong ratios still measures -3 dB at the corner while being
+  17 dB adrift in the stopband.
 - **A Butterworth's section Qs depend on the parity of its order.** An odd
   order puts one pole on the real axis and shifts the conjugate pairs around
   it, so `1 / (2 cos((2k-1)pi / 2N))` is right for even orders and wrong for

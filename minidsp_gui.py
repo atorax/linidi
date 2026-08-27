@@ -816,7 +816,7 @@ class CrossoverGroup(QGroupBox):
         if align == "linkwitz-riley":
             items = [(str(o), f"LR{o * 6}") for o in (2, 4, 6, 8)]
         elif align == "bessel":
-            items = [(str(o), f"{o * 6} dB/oct") for o in (2, 4, 6, 8)]
+            items = [(str(o), f"{o * 6} dB/oct") for o in range(2, 9)]
         elif align == "butterworth":
             items = [(str(o), f"{o * 6} dB/oct")
                      for o in (1, 2, 3, 4, 5, 6, 7, 8)]
