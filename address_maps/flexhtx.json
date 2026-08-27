@@ -2,7 +2,7 @@
   "device": "flexhtx",
   "internal_sampling_rate": 96000,
   "generated_from": "minidsp-rs protocol/src/device/flexhtx.rs",
-  "note": "Addresses are float indices. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "note": "Addresses are float indices. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
   "inputs": [
     {
       "gain": 48,
@@ -29,6 +29,16 @@
         133,
         134,
         135
+      ],
+      "routing_status": [
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63
       ]
     },
     {
@@ -56,6 +66,16 @@
         141,
         142,
         143
+      ],
+      "routing_status": [
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,
+        71
       ]
     },
     {
@@ -83,6 +103,16 @@
         149,
         150,
         151
+      ],
+      "routing_status": [
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79
       ]
     },
     {
@@ -110,6 +140,16 @@
         157,
         158,
         159
+      ],
+      "routing_status": [
+        80,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87
       ]
     },
     {
@@ -137,6 +177,16 @@
         165,
         166,
         167
+      ],
+      "routing_status": [
+        88,
+        89,
+        90,
+        91,
+        92,
+        93,
+        94,
+        95
       ]
     },
     {
@@ -164,6 +214,16 @@
         173,
         174,
         175
+      ],
+      "routing_status": [
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103
       ]
     },
     {
@@ -191,6 +251,16 @@
         181,
         182,
         183
+      ],
+      "routing_status": [
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111
       ]
     },
     {
@@ -218,6 +288,16 @@
         189,
         190,
         191
+      ],
+      "routing_status": [
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119
       ]
     }
   ],

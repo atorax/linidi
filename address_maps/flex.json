@@ -2,7 +2,7 @@
   "device": "flex",
   "internal_sampling_rate": 96000,
   "generated_from": "minidsp-rs protocol/src/device/flex.rs",
-  "note": "Addresses are float indices. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "note": "Addresses are float indices. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
   "inputs": [
     {
       "gain": 26,
@@ -25,6 +25,12 @@
         33,
         34,
         35
+      ],
+      "routing_status": [
+        6,
+        7,
+        8,
+        9
       ]
     },
     {
@@ -48,6 +54,12 @@
         37,
         38,
         39
+      ],
+      "routing_status": [
+        10,
+        11,
+        12,
+        13
       ]
     }
   ],

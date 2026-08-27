@@ -210,7 +210,16 @@ class NativeDevice:
                 self._dev.set_preset(int(fields["preset"]))
 
     def set_config(self, payload: dict[str, Any]) -> None:
-        """Apply a project payload, in the shape the app already builds."""
+        """Apply a project payload, in the shape the app already builds.
+
+        A mixer cell's on/off gate is written only where the address map
+        records one. It used to be derived as in_index * outputs + out_index,
+        which is true of the Flex 8 and of nothing much else: on five of the
+        thirteen generated maps the real gates sit elsewhere, and on three
+        there are none at all, so that arithmetic addressed whatever parameter
+        happened to occupy the slot. On a 2x4HD it lands on the channel mute
+        gates, meaning a routing change would have muted channels instead.
+        """
         self._check_payload(payload)
         with self._lock:
             for out in payload.get("outputs", []):
@@ -287,11 +296,14 @@ class NativeDevice:
     def _set_route(self, in_idx: int, route: dict[str, Any]) -> None:
         """Mixer cell, which uses the same 1-off / 2-on gate as a channel."""
         out_idx = route["index"]
-        status_addr = _mixer_status_addr(self.amap, in_idx, out_idx)
-        gain_addrs = self.amap.inputs[in_idx].get("routing", [])
-        self._dev.write_int(status_addr, _gate(not route.get("enabled")))
-        if out_idx < len(gain_addrs):
-            self._dev.write_float(gain_addrs[out_idx],
+        spec = self.amap.inputs[in_idx]
+        gates = spec.get("routing_status", [])
+        gains = spec.get("routing", [])
+        if out_idx < len(gates):
+            self._dev.write_int(gates[out_idx],
+                                _gate(not route.get("enabled")))
+        if out_idx < len(gains):
+            self._dev.write_float(gains[out_idx],
                                   float(route.get("gain", 0.0)))
 
 
@@ -320,17 +332,6 @@ def _set_gate(out: dict[str, Any], raw: int) -> None:
     """
     if raw in (GATE_MUTED, GATE_PASSING):
         out["mute"] = raw == GATE_MUTED
-
-
-def _mixer_status_addr(amap: AddressMap, in_idx: int, out_idx: int) -> int:
-    """Where a mixer cell's on/off flag lives.
-
-    The status flags occupy their own block starting at address 0, one per
-    cell, laid out input-major: Mixer_0_4_status is 4, Mixer_1_2_status is 10
-    on an 8-output device. The generated maps only record the mixer *gain*
-    addresses, which sit in the block immediately after.
-    """
-    return in_idx * len(amap.outputs) + out_idx
 
 
 def _coeff_list(coeff: dict[str, float]) -> list[float]:

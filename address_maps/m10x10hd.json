@@ -2,7 +2,7 @@
   "device": "m10x10hd",
   "internal_sampling_rate": 96000,
   "generated_from": "minidsp-rs protocol/src/device/m10x10hd.rs",
-  "note": "Addresses are float indices. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "note": "Addresses are float indices. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
   "inputs": [
     {
       "gain": 11,
@@ -26,7 +26,8 @@
         470,
         406,
         438
-      ]
+      ],
+      "routing_status": []
     },
     {
       "gain": 12,
@@ -50,7 +51,8 @@
         454,
         417,
         464
-      ]
+      ],
+      "routing_status": []
     },
     {
       "gain": 13,
@@ -74,7 +76,8 @@
         414,
         446,
         449
-      ]
+      ],
+      "routing_status": []
     },
     {
       "gain": 14,
@@ -98,7 +101,8 @@
         452,
         461,
         453
-      ]
+      ],
+      "routing_status": []
     },
     {
       "gain": 15,
@@ -122,7 +126,8 @@
         403,
         460,
         480
-      ]
+      ],
+      "routing_status": []
     },
     {
       "gain": 16,
@@ -146,7 +151,8 @@
         472,
         458,
         466
-      ]
+      ],
+      "routing_status": []
     },
     {
       "gain": 17,
@@ -170,7 +176,8 @@
         475,
         441,
         476
-      ]
+      ],
+      "routing_status": []
     },
     {
       "gain": 18,
@@ -194,7 +201,8 @@
         386,
         418,
         447
-      ]
+      ],
+      "routing_status": []
     },
     {
       "gain": 54,
@@ -218,7 +226,8 @@
         398,
         409,
         478
-      ]
+      ],
+      "routing_status": []
     },
     {
       "gain": 55,
@@ -242,7 +251,8 @@
         481,
         385,
         479
-      ]
+      ],
+      "routing_status": []
     }
   ],
   "outputs": [

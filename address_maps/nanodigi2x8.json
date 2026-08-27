@@ -2,7 +2,7 @@
   "device": "nanodigi2x8",
   "internal_sampling_rate": 96000,
   "generated_from": "minidsp-rs protocol/src/device/nanodigi2x8.rs",
-  "note": "Addresses are float indices. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "note": "Addresses are float indices. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
   "inputs": [
     {
       "gain": 46,
@@ -23,7 +23,8 @@
         179,
         183,
         187
-      ]
+      ],
+      "routing_status": []
     },
     {
       "gain": 47,
@@ -44,7 +45,8 @@
         180,
         184,
         188
-      ]
+      ],
+      "routing_status": []
     }
   ],
   "outputs": [

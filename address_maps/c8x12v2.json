@@ -2,7 +2,7 @@
   "device": "c8x12v2",
   "internal_sampling_rate": 96000,
   "generated_from": "minidsp-rs protocol/src/device/c8x12v2.rs",
-  "note": "Addresses are float indices. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "note": "Addresses are float indices. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
   "inputs": [
     {
       "gain": 321,
@@ -29,6 +29,16 @@
         101,
         102,
         103
+      ],
+      "routing_status": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
       ]
     },
     {
@@ -56,6 +66,16 @@
         113,
         114,
         115
+      ],
+      "routing_status": [
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
       ]
     },
     {
@@ -83,6 +103,16 @@
         125,
         126,
         127
+      ],
+      "routing_status": [
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31
       ]
     },
     {
@@ -110,6 +140,16 @@
         137,
         138,
         139
+      ],
+      "routing_status": [
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43
       ]
     },
     {
@@ -137,6 +177,16 @@
         149,
         150,
         151
+      ],
+      "routing_status": [
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55
       ]
     },
     {
@@ -164,6 +214,16 @@
         161,
         162,
         163
+      ],
+      "routing_status": [
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67
       ]
     },
     {
@@ -191,6 +251,16 @@
         173,
         174,
         175
+      ],
+      "routing_status": [
+        72,
+        73,
+        74,
+        75,
+        76,
+        77,
+        78,
+        79
       ]
     },
     {
@@ -218,6 +288,16 @@
         185,
         186,
         187
+      ],
+      "routing_status": [
+        84,
+        85,
+        86,
+        87,
+        88,
+        89,
+        90,
+        91
       ]
     }
   ],

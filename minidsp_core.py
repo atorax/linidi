@@ -1331,22 +1331,40 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
     happens inside the device firmware, below anything the protocol exposes.
 
     Rather than model that, this closes the loop: write, read, and re-write
-    with the observed error subtracted. Two iterations land within a
+    with the observed error subtracted. Three iterations usually land within a
     quantisation step of the target, which is the best the hardware can do.
+
+    If none of them land, the device is left on whichever attempt came
+    closest, not on whichever happened to be last. The correction can
+    overshoot -- the grid is not uniform in dB -- so the final attempt is
+    sometimes worse than one before it, and stopping there would leave the
+    output further from its target than an earlier write already had it.
 
     Returns (achieved_db, writes_performed).
     """
-    achieved = None
+    def put(db: float) -> float:
+        daemon.set_config({"outputs": [{"index": output, "gain": db}]})
+        return readback.read_output(output)["gain"]
+
     request = float(target_db)
-    for attempt in range(1, tries + 1):
-        daemon.set_config({"outputs": [{"index": output, "gain": request}]})
-        achieved = readback.read_output(output)["gain"]
+    best_request = best_achieved = None
+    writes = 0
+    for _ in range(tries):
+        achieved = put(request)
+        writes += 1
         error = achieved - target_db
+        if best_achieved is None or abs(error) < abs(best_achieved - target_db):
+            best_request, best_achieved = request, achieved
         if abs(error) <= tol:
-            return achieved, attempt
+            return achieved, writes
         # Push the request the other way by the observed error.
         request = max(-127.0, min(0.0, request - error))
-    return achieved, tries
+
+    if best_request is not None and abs(achieved - target_db) > abs(
+            best_achieved - target_db):
+        achieved = put(best_request)
+        writes += 1
+    return achieved, writes
 
 
 def apply_project(daemon: "Daemon", project: dict[str, Any],

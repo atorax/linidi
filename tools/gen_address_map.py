@@ -5,8 +5,8 @@ Generate JSON address maps from minidsp-rs device definitions.
 minidsp-rs describes each supported device in `protocol/src/device/<name>.rs`,
 a generated file containing a `sym` module of symbol->address constants plus a
 `DEVICE` static laying out which symbol drives each input/output parameter.
-Nothing in the REST API exposes those addresses, but readback needs them, so
-we parse them out of the source.
+Nothing in the REST API exposes those addresses, and reading or writing a
+filter needs them, so we parse them out of the source.
 
 Usage:
     python3 gen_address_map.py /path/to/minidsp-rs [device ...]
@@ -90,9 +90,16 @@ def parse_device(src: str, syms: dict[str, int]) -> dict:
             rm = ROUTING_RE.search(body)
             if rm:
                 names = SYMBOL_LIST_RE.findall(rm.group(1))
-                # Routing alternates enable/gain symbols; keep gains only.
-                gains = [n for n in names if not n.endswith("_STATUS")]
-                entry["routing"] = resolve(gains, syms)
+                # A routing cell is a Gate: an enable symbol and a gain
+                # symbol. Both are kept. Discarding the enables meant the app
+                # had to re-derive them as in_index * outputs + out_index,
+                # which is true of the Flex family and false elsewhere -- on a
+                # 2x4HD those addresses are channel mute gates, so a routing
+                # change would have muted channels instead.
+                entry["routing"] = resolve(
+                    [n for n in names if not n.endswith("_STATUS")], syms)
+                entry["routing_status"] = resolve(
+                    [n for n in names if n.endswith("_STATUS")], syms)
             inputs.append(entry)
         else:
             outputs.append(entry)
@@ -129,7 +136,7 @@ def main(argv: list[str]) -> int:
         if wanted and name not in wanted:
             continue
 
-        src = path.read_text()
+        src = path.read_text(encoding="utf-8")
         syms = parse_symbols(src)
         if not syms:
             print(f"  {name}: no symbols found, skipping")
@@ -147,14 +154,17 @@ def main(argv: list[str]) -> int:
             "internal_sampling_rate": find_rate(src),
             "generated_from": f"minidsp-rs protocol/src/device/{path.name}",
             "note": (
-                "Addresses are float indices. The minidsp CLI parses address "
-                "arguments as HEX, so convert before shelling out to "
-                "`minidsp debug dump-float`."
+                "Addresses are float indices. routing and routing_status are "
+                "per input, one entry per destination output: the gain "
+                "address and the on/off gate address for that cell. The "
+                "minidsp CLI parses address arguments as HEX, so convert "
+                "before shelling out to `minidsp debug dump-float`."
             ),
             **layout,
         }
         target = outdir / f"{name}.json"
-        target.write_text(json.dumps(doc, indent=2))
+        target.write_text(json.dumps(doc, indent=2) + "\n",
+                          encoding="utf-8")
         peq_n = len(layout["outputs"][0].get("peq", []))
         print(f"  {name}: {n_in} in / {n_out} out, {peq_n} PEQ "
               f"-> {target.name}")

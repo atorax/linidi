@@ -2,7 +2,7 @@
   "device": "msharc4x8",
   "internal_sampling_rate": 96000,
   "generated_from": "minidsp-rs protocol/src/device/msharc4x8.rs",
-  "note": "Addresses are float indices. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "note": "Addresses are float indices. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
   "inputs": [
     {
       "gain": 68,
@@ -25,6 +25,12 @@
         81,
         82,
         83
+      ],
+      "routing_status": [
+        12,
+        13,
+        14,
+        15
       ]
     },
     {
@@ -48,6 +54,12 @@
         89,
         90,
         91
+      ],
+      "routing_status": [
+        20,
+        21,
+        22,
+        23
       ]
     },
     {
@@ -71,6 +83,12 @@
         97,
         98,
         99
+      ],
+      "routing_status": [
+        28,
+        29,
+        30,
+        31
       ]
     },
     {
@@ -94,6 +112,12 @@
         105,
         106,
         107
+      ],
+      "routing_status": [
+        36,
+        37,
+        38,
+        39
       ]
     }
   ],
