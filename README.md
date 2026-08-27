@@ -228,6 +228,13 @@ Things that cost real debugging time:
 - **Bypass is a separate opcode** (`0x19`) stored apart from the coefficients,
   so a bypassed filter keeps its old coefficients. Reading coefficients alone
   cannot tell you what is actually in circuit.
+- **A filter address is the base of a 5-float biquad block, and the device
+  aligns reads down to one.** Asking for `base+14` returns the block starting
+  at `base+10`. Reading a 20-float crossover group in chunks of the device's
+  14-float reply limit therefore returns overlapping data, and the third and
+  fourth sections come back as a copy of the second. Read whole biquads.
+- **PEQ band addresses descend.** Band 0 sits at the highest address and the
+  rest step down by 5, so never assume the list is ascending.
 - **Replies queue on the interrupt endpoint.** An abandoned or late reply stays
   buffered and the next read returns the *previous* answer. Since every reply
   starts with the command byte, a stale one passes a naive check — match the

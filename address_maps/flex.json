@@ -2,7 +2,7 @@
   "device": "flex",
   "internal_sampling_rate": 96000,
   "generated_from": "minidsp-rs protocol/src/device/flex.rs",
-  "note": "Addresses are float indices. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "note": "Addresses are float indices, and a filter address is the base of a 5-float biquad block: the device aligns reads down to one, so an unaligned address returns the block containing it. peq lists run band 0 first, which is the *highest* address: the bands descend by 5. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
   "inputs": [
     {
       "gain": 26,
