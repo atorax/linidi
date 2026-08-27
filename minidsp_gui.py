@@ -1420,6 +1420,9 @@ class ChannelRow(QWidget):
     def __init__(self, name: str, detail: str, muted: bool, dim: bool,
                  name_width: int):
         super().__init__()
+        self.channel_name = name
+        self.full_detail = detail
+        self.dim = dim
         self.setFixedHeight(self.ROW_HEIGHT)
         self.setObjectName("navRow")
         # A bare QWidget ignores a stylesheet background unless asked to draw
@@ -1432,8 +1435,6 @@ class ChannelRow(QWidget):
 
         self.name = QLabel(name)
         self.name.setFixedWidth(name_width)
-        if muted or dim:
-            self.name.setStyleSheet(f"color: {MUTED};")
         lay.addWidget(self.name)
 
         self.detail = QLabel(detail)
@@ -1442,12 +1443,9 @@ class ChannelRow(QWidget):
 
         self.mute = QPushButton()
         self.mute.setCheckable(True)
-        self.mute.setChecked(muted)
         self.mute.setFixedSize(24, 24)
         self.mute.setIconSize(QSize(16, 16))
-        self.mute.setIcon(speaker_icon(16, muted=muted))
         self.mute.setCursor(Qt.PointingHandCursor)
-        self.mute.setToolTip(f"{'Unmute' if muted else 'Mute'} {name}")
         self.mute.setStyleSheet(
             "QPushButton { background: transparent; border: 0; }"
             f"QPushButton:hover {{ background: {PANEL2};"
@@ -1456,6 +1454,21 @@ class ChannelRow(QWidget):
         self.mute.clicked.connect(
             lambda: self.toggled.emit(self.mute.isChecked()))
         lay.addWidget(self.mute, 0, Qt.AlignVCenter)
+        self.set_muted(muted)
+
+    def set_muted(self, muted: bool):
+        """Show a channel as muted, without rebuilding the row.
+
+        Flipping one icon used to go through a full list rebuild, which also
+        re-selected a row and so reloaded the whole editor for a channel that
+        had not changed.
+        """
+        self.mute.setChecked(muted)
+        self.mute.setIcon(speaker_icon(16, muted=muted))
+        self.mute.setToolTip(
+            f"{'Unmute' if muted else 'Mute'} {self.channel_name}")
+        self.name.setStyleSheet(
+            f"color: {MUTED};" if muted or self.dim else "")
 
     def set_selected(self, on: bool):
         """Each row is a card, darker than the panel it sits on.
@@ -1765,9 +1778,18 @@ class ChannelEditor(QWidget):
                     break
         return feeding
 
-    def refresh_plot(self, rate: int = 96000):
+    def refresh_plot(self):
+        """Redraw the response for the loaded channel.
+
+        The rate comes from the project rather than from an argument. It used
+        to be a parameter defaulting to 96000, and only the caller that runs
+        on channel selection passed the real one -- so on a device with a
+        different internal rate every edit redrew the plot against the wrong
+        one, and selecting a channel corrected it again.
+        """
         if self.chan is None:
             return
+        rate = int((self.project or {}).get("rate", 96000))
         freqs = self.plot.freqs
         try:
             own = [core.peq_biquad(b, rate) for b in self.chan.get("peq", [])]
@@ -1792,10 +1814,11 @@ class ChannelEditor(QWidget):
                                    core.response_db(upstream + own, freqs,
                                                     rate),
                                    ACCENT, True))
+            phases = (self._phase_curves(freqs, rate)
+                      if self.show_phase.isChecked() else [])
             self.plot.set_curves(curves)
             self.plot.set_bands(self._band_curves(freqs, rate))
-            self.plot.set_phases(self._phase_curves(freqs, rate)
-                                 if self.show_phase.isChecked() else [])
+            self.plot.set_phases(phases)
 
             if not self.is_output:
                 self.legend.setText(
@@ -1809,13 +1832,20 @@ class ChannelEditor(QWidget):
             else:
                 self.legend.setText("solid: this output's own chain")
 
-            if self.show_phase.isChecked():
-                names = [t["label"] for t in self._phase_curves(freqs, rate)]
-                extra = ("     dotted: phase, right-hand scale - "
-                         + " vs ".join(names) if len(names) > 1
-                         else "     dotted: phase, right-hand scale")
+            if phases:
+                # Reuses what was just computed: building these again for the
+                # legend meant designing and evaluating every filter on the
+                # channel, and its crossover partner, a second time on every
+                # repaint.
+                names = [t["label"] for t in phases]
+                extra = "     dotted: phase, right-hand scale"
+                if len(names) > 1:
+                    extra += " - " + " vs ".join(names)
                 self.legend.setText(self.legend.text() + extra)
         except Exception:                                # noqa: BLE001
+            # A paint path: a channel mid-edit can hold values no filter can
+            # be designed from, and blanking the plot is better than letting
+            # the exception reach the event loop.
             self.plot.set_curves([])
             self.plot.set_bands([])
             self.plot.set_phases([])
@@ -2191,6 +2221,7 @@ class MainWindow(QMainWindow):
         self.project_path = Path(opts.project).expanduser()
         self.dirty = False
         self.have_read = False
+        self._name_col = 36
         self._topology_dsp: int | None = None
         self._last_config = None
 
@@ -2472,7 +2503,6 @@ class MainWindow(QMainWindow):
         item.setData(Qt.UserRole, (kind, i))
         row = ChannelRow(chan.get("name", ""), detail,
                          bool(chan.get("mute")), dim, self._name_col)
-        row.full_detail = detail
         row.toggled.connect(
             lambda muted, k=kind, n=i: self.on_channel_mute(k, n, muted))
         # The stylesheet pads list items, and that padding is not taken out of
@@ -2493,7 +2523,7 @@ class MainWindow(QMainWindow):
         key = "outputs" if kind == "output" else "inputs"
         chan = self.project[key][index]
         chan["mute"] = muted
-        self.refresh_list()
+        self._show_mute(kind, index, muted)
         name = chan.get("name", kind)
         payload = {key: [{"index": index, "mute": muted}]}
 
@@ -2501,7 +2531,7 @@ class MainWindow(QMainWindow):
             # The device did not take it, so put the icon back rather than
             # leaving the screen claiming a driver is quiet when it is not.
             chan["mute"] = not muted
-            self.refresh_list()
+            self._show_mute(kind, index, not muted)
             self.statusBar().showMessage(f"{name}: mute failed - {msg}", 8000)
 
         self.tasks.run(
@@ -2509,6 +2539,15 @@ class MainWindow(QMainWindow):
             on_done=lambda _: self.statusBar().showMessage(
                 f"{name} {'muted' if muted else 'unmuted'}", 3000),
             on_error=failed)
+
+    def _show_mute(self, kind: str, index: int, muted: bool):
+        """Update one navigator row in place."""
+        for r in range(self.chan_list.count()):
+            if self.chan_list.item(r).data(Qt.UserRole) == (kind, index):
+                row = self.chan_list.itemWidget(self.chan_list.item(r))
+                if row is not None:
+                    row.set_muted(muted)
+                return
 
     def refresh_list(self):
         """Channel list ordered by signal flow: inputs first, then outputs."""
@@ -2582,7 +2621,7 @@ class MainWindow(QMainWindow):
         if chan is not None:
             self.editor.project = self.project
             self.editor.load(chan, is_out)
-            self.editor.refresh_plot(int(self.project.get("rate", 96000)))
+            self.editor.refresh_plot()
 
     def on_navigate(self, kind: str, index: int):
         """Select a channel because a chain stage was clicked."""
