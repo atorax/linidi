@@ -7,7 +7,8 @@ a script, or tests.
 
 Three jobs:
   1. Filter design      (RBJ biquads, crossover alignments) and its inverse
-  2. Device I/O         (minidspd REST for writes, minidsp CLI for readback)
+  2. Device I/O         (the minidspd fallback; the direct USB path lives in
+                         minidsp_protocol and minidsp_native)
   3. Project model      (local source of truth, snapshots, REW interchange)
 
 Biquad sign convention
@@ -1627,7 +1628,7 @@ def _candidate_roots() -> list[Path]:
         b = Path(base)
         if not b.is_dir():
             continue
-        for lvl1 in b.iterdir() if b.is_dir() else []:
+        for lvl1 in b.iterdir():
             try:
                 if not lvl1.is_dir():
                     continue
@@ -1682,9 +1683,17 @@ def find_console_settings(serial: int | None = None,
 
 
 def console_setting_file(settings_dir: Path, preset: int) -> Path | None:
-    """The file for a preset. Device Console numbers them from one."""
+    """The file for one preset, or None. Device Console numbers them from one.
+
+    Only the file for the preset asked for. There used to be a fallback to
+    the first file in the directory, which meant a device sitting on preset 3
+    with only settings 1 and 2 saved quietly loaded preset 1 -- and what is
+    loaded from here is bypass state and PEQ contents, which the app treats as
+    authoritative precisely because the hardware cannot report them. Applying
+    afterwards would then have written one preset's tuning onto another.
+
+    Returning None is the honest answer; the caller says no settings file was
+    found and offers Import XML, which is a choice the user makes knowingly.
+    """
     candidate = settings_dir / f"setting{preset + 1}.xml"
-    if candidate.is_file():
-        return candidate
-    files = sorted(settings_dir.glob("setting*.xml"))
-    return files[0] if files else None
+    return candidate if candidate.is_file() else None

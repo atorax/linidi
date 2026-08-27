@@ -372,13 +372,13 @@ class Worker(QObject):
     done = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, fn, *args, **kwargs):
+    def __init__(self, fn):
         super().__init__()
-        self._fn, self._args, self._kwargs = fn, args, kwargs
+        self._fn = fn
 
     def run(self):
         try:
-            self.done.emit(self._fn(*self._args, **self._kwargs))
+            self.done.emit(self._fn())
         except Exception as exc:                       # noqa: BLE001
             self.failed.emit(str(exc))
 
@@ -407,9 +407,16 @@ class TaskRunner(QObject):
         super().__init__(parent)
         self._live: list[tuple[QThread, Worker]] = []
 
-    def run(self, fn, on_done=None, on_error=None, *args, **kwargs):
+    def run(self, fn, on_done=None, on_error=None):
+        """Run `fn` -- which takes no arguments -- off the UI thread.
+
+        Arguments used to be forwarded, but sat after two optional callbacks,
+        so a positional argument bound itself to on_done and was called as a
+        callback instead. Every caller passes a closure; that is the contract
+        now.
+        """
         thread = QThread()
-        worker = Worker(fn, *args, **kwargs)
+        worker = Worker(fn)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
 
@@ -438,12 +445,22 @@ class TaskRunner(QObject):
                 self._live.remove(pair)
 
     def shutdown(self):
-        """Stop and join everything still in flight, before the window dies."""
+        """Stop and join everything still in flight, before the window dies.
+
+        A thread that does not stop in time keeps its entry. Clearing the list
+        regardless would drop the last reference to a running QThread, and the
+        collector destroying one of those aborts the process -- the very thing
+        this class is arranged to avoid. Better to leak a thread on the way
+        out than to crash on the way out.
+        """
         for thread, _worker in list(self._live):
             thread.quit()
-        for thread, _worker in list(self._live):
-            thread.wait(5000)
-        self._live.clear()
+        for pair in list(self._live):
+            thread, worker = pair
+            if thread.wait(5000):
+                worker.deleteLater()
+                thread.deleteLater()
+                self._live.remove(pair)
 
 
 # --------------------------------------------------------------------------
@@ -470,8 +487,7 @@ class MeterBar(QWidget):
         self.peak = -120.0
         self._peak_at = 0.0
         self._last = time.monotonic()
-        self.setMinimumHeight(15)
-        self.setMaximumHeight(15)
+        self.setFixedHeight(15)
 
     def set_value(self, db: float):
         self.value = db
@@ -1881,11 +1897,20 @@ class ChannelEditor(QWidget):
                 continue
             dbs = core.response_db([bq], freqs, rate)
             idx = b.get("index", r)
-            f0 = float(b.get("freq", 1000.0))
-            # Mark the band at its own corner, on its own curve, rather than
-            # at its nominal gain: for a shelf or a pass filter those are not
-            # the same point, and the marker has to sit on the line it labels.
-            nearest = min(range(len(freqs)), key=lambda i: abs(freqs[i] - f0))
+            if b.get("manual"):
+                # Typed coefficients leave the frequency field describing
+                # whatever the band used to be, so mark where the filter
+                # actually does the most instead of where that field points.
+                nearest = max(range(len(dbs)), key=lambda i: abs(dbs[i]))
+                f0 = freqs[nearest]
+            else:
+                # Mark the band at its own corner, on its own curve, rather
+                # than at its nominal gain: for a shelf or a pass filter those
+                # are not the same point, and the marker has to sit on the
+                # line it labels.
+                f0 = float(b.get("freq", 1000.0))
+                nearest = min(range(len(freqs)),
+                              key=lambda i: abs(freqs[i] - f0))
             out.append({
                 "index": idx,
                 "colour": peq_colour(idx),
@@ -1937,7 +1962,7 @@ class MasterStrip(QFrame):
         self.volume.setRange(-1270, 0)          # tenths of a dB
         self.volume.setFixedWidth(220)
         self.volume.sliderReleased.connect(self._volume_committed)
-        self.volume.valueChanged.connect(self._volume_preview)
+        self.volume.valueChanged.connect(self._volume_changed)
         lay.addWidget(self.volume)
         self.volume_label = QLabel("--")
         self.volume_label.setFixedWidth(64)
@@ -1987,6 +2012,18 @@ class MasterStrip(QFrame):
 
     def _volume_preview(self, v):
         self.volume_label.setText(f"{v / 10.0:.1f} dB")
+
+    def _volume_changed(self, v):
+        """Show every change, and send the ones that are not mid-drag.
+
+        Only the end of a drag used to be sent, so the arrow keys, the mouse
+        wheel and a click on the groove all moved the slider and updated the
+        readout without the device ever being told. A drag still sends once,
+        on release, rather than on every pixel.
+        """
+        self._volume_preview(v)
+        if not self.volume.isSliderDown():
+            self._volume_committed()
 
     def _volume_committed(self):
         self._emit({"volume": self.volume.value() / 10.0})
