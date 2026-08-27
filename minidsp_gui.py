@@ -25,16 +25,14 @@ from typing import Any
 
 from PySide6.QtCore import (QObject, QPointF, QRectF, QSize, QThread,
                             QTimer, Qt, Signal)
-from PySide6.QtGui import (QAction, QColor, QFont, QIcon, QPainter,
-                           QPainterPath, QPen, QPixmap, QPolygonF)
+from PySide6.QtGui import (QColor, QFont, QIcon, QPainter, QPainterPath,
+                           QPen, QPixmap, QPolygonF)
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QSlider,
-    QStackedWidget, QStatusBar, QTableWidget, QTableWidgetItem,
-    QTextBrowser,
-    QVBoxLayout,
+    QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+    QHeaderView, QLabel, QListWidget, QListWidgetItem, QMainWindow,
+    QMessageBox, QPlainTextEdit, QPushButton, QSlider, QStackedWidget,
+    QStatusBar, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
     QWidget,
 )
 
@@ -81,7 +79,7 @@ PEQ_COLOURS = [
 
 
 def peq_colour(index: int) -> str:
-    """Colour for band `index`, wrapping if a device has more bands than hues."""
+    """Colour for band `index`, wrapping if there are more bands than hues."""
     return PEQ_COLOURS[index % len(PEQ_COLOURS)]
 
 
@@ -132,6 +130,12 @@ def peq_badge(index: int, size: int = 20, active: bool = True) -> QPixmap:
 # in the stylesheet that nothing else can see.
 LIST_ITEM_PAD_Y = 6
 
+# Said in two places -- a crossover group and a PEQ band -- about the same
+# condition, so it is written once.
+UNKNOWN_BYPASS_TIP = (
+    "Bypass state is unknown: it was read from the hardware, which cannot\n"
+    "report it.\nLeft untouched on Apply. Click to set it explicitly.")
+
 STYLE = f"""
 /* Only real containers paint a background. Setting it on bare QWidget makes
    every label and checkbox draw the window colour over whatever panel it is
@@ -155,7 +159,8 @@ QPushButton#danger {{ background: {PANEL2}; color: #ffffff;
                       letter-spacing: .04em; padding: 5px 12px; }}
 QPushButton#danger:hover {{ background: #2c313c; }}
 QPushButton#danger[spent="true"] {{ color: {DANGER}; }}
-QPushButton:checked {{ background: {WARN}; color: #201800; border-color: {WARN}; }}
+QPushButton:checked {{ background: {ACTIVE}; color: #1a1206;
+                       border-color: {ACTIVE}; }}
 QComboBox, QDoubleSpinBox, QPlainTextEdit, QListWidget, QTableWidget {{
     background: {PANEL2}; border: 1px solid {LINE}; border-radius: 4px;
     padding: 2px 4px; selection-background-color: {ACCENT};
@@ -313,7 +318,7 @@ def led_icon(size: int = 12, colour: str = "#000000",
 def _painted_speaker_icon(size: int, muted: bool, body: str,
                           slash: str) -> QIcon:
     """Fallback glyph, drawn rather than loaded."""
-    scale = 4                                   # supersample, then smooth-scale
+    scale = 4                          # supersample, then smooth-scale
     n = size * scale
     pm = QPixmap(n, n)
     pm.fill(Qt.transparent)
@@ -503,7 +508,8 @@ class MeterBar(QWidget):
 
         fill = int(bar_w * frac(self.display))
         if fill > 0:
-            col = DANGER if self.value > -3 else WARN if self.value > -12 else OK
+            col = (DANGER if self.value > -3
+                   else WARN if self.value > -12 else OK)
             p.fillRect(x0, 4, fill, h - 8, QColor(col))
         if self.peak > -119:
             px = x0 + int(bar_w * frac(self.peak))
@@ -528,7 +534,7 @@ class ResponsePlot(QWidget):
         self.update()
 
     def set_phases(self, phases):
-        """Phase traces, each {degs, colour, label}, on their own right axis."""
+        """Phase traces, {degs, colour, label}, on their own right axis."""
         self.phases = phases
         self.update()
 
@@ -823,7 +829,7 @@ class CrossoverGroup(QGroupBox):
             self.enabled.setToolTip("")
         else:
             self.enabled.setCheckState(Qt.PartiallyChecked)
-            self.enabled.setToolTip("Bypass state is unknown: it was read from the hardware, which cannot report it.\nLeft untouched on Apply. Click to set it explicitly.")
+            self.enabled.setToolTip(UNKNOWN_BYPASS_TIP)
         align = group.get("alignment", "linkwitz-riley")
         idx = self.alignment.findText(align)
         self.alignment.setCurrentIndex(max(0, idx))
@@ -880,7 +886,8 @@ def provenance_item(b: dict[str, Any]) -> QTableWidgetItem:
         label, colour = "not readable", DANGER
         tip = ("The device does not report PEQ contents, so this band was not "
                "read.\nThe values shown are from the project, not from the "
-               "hardware.\nImport a Device Console export to load the real ones.")
+               "hardware.\nImport a Device Console export to load the\n"
+               "real ones.")
     elif state == "config":
         label, colour = "from config", ACCENT
         tip = ("Loaded from a Device Console export. The device cannot report "
@@ -942,7 +949,7 @@ class PeqTable(QTableWidget):
         header.setSectionResizeMode(QHeaderView.Stretch)
         # The badge column holds one glyph and should not share in the width.
         header.setSectionResizeMode(self.C_NUM, QHeaderView.Fixed)
-        header.setMinimumSectionSize(26)      # else the header text sets a floor
+        header.setMinimumSectionSize(26)   # else the header sets a floor
         self.setColumnWidth(self.C_NUM, 34)
         self.setSelectionMode(QTableWidget.NoSelection)
         self.bands: list[dict[str, Any]] = []
@@ -972,7 +979,7 @@ class PeqTable(QTableWidget):
                     Qt.Checked if b.get("enabled") else Qt.Unchecked)
             else:
                 on.setCheckState(Qt.PartiallyChecked)
-                on.setToolTip("Bypass state is unknown: it was read from the hardware, which cannot report it.\nLeft untouched on Apply. Click to set it explicitly.")
+                on.setToolTip(UNKNOWN_BYPASS_TIP)
             on.clicked.connect(
                 lambda _c=False, cb=on: self._resolve(cb))
             on.toggled.connect(lambda _c, row=r: self._sync_badge(row))
@@ -997,7 +1004,9 @@ class PeqTable(QTableWidget):
                 (self.C_GAIN, "gain", -24.0, 24.0, 2, 0.5),
             ]:
                 sb = QDoubleSpinBox()
-                sb.setRange(lo, hi); sb.setDecimals(dec); sb.setSingleStep(step)
+                sb.setRange(lo, hi)
+                sb.setDecimals(dec)
+                sb.setSingleStep(step)
                 sb.setValue(float(b.get(key, 0.0)))
                 sb.setEnabled(not manual)
                 sb.valueChanged.connect(self._emit)
@@ -1046,7 +1055,7 @@ class PeqTable(QTableWidget):
 
 
 class BiquadTable(QTableWidget):
-    """The same bands as the PEQ tab, shown as the coefficients they compile to.
+    """The same bands as the PEQ tab, as the coefficients they compile to.
 
     miniDSP adds the feedback terms rather than subtracting them, so a1 and a2
     carry the opposite sign to the textbook form. REW's miniDSP export already
@@ -1112,7 +1121,7 @@ class BiquadTable(QTableWidget):
                 sb.setSingleStep(0.0001)
                 sb.setValue(float(coeffs.get(key, 0.0)))
                 sb.setFont(QFont("monospace", 9))
-                # Connected after setValue, so loading does not read as editing.
+                # Connected after setValue: loading is not editing.
                 sb.valueChanged.connect(lambda _v, row=r: self._edited(row))
                 self.setCellWidget(r, col, sb)
 
@@ -1413,9 +1422,11 @@ class ChannelRow(QWidget):
         self.mute.setToolTip(f"{'Unmute' if muted else 'Mute'} {name}")
         self.mute.setStyleSheet(
             "QPushButton { background: transparent; border: 0; }"
-            f"QPushButton:hover {{ background: {PANEL2}; border-radius: 4px; }}")
+            f"QPushButton:hover {{ background: {PANEL2};"
+            f" border-radius: 4px; }}")
         # Clicking the mute must not also change which channel is selected.
-        self.mute.clicked.connect(lambda: self.toggled.emit(self.mute.isChecked()))
+        self.mute.clicked.connect(
+            lambda: self.toggled.emit(self.mute.isChecked()))
         lay.addWidget(self.mute, 0, Qt.AlignVCenter)
 
     def set_selected(self, on: bool):
@@ -1568,7 +1579,8 @@ class ChannelEditor(QWidget):
         self.xo_holder.setVisible(is_output)
         self.routing_box.setVisible(not is_output)
         if is_output:
-            for widget, group in zip(self.xo_groups, chan.get("crossover", [])):
+            groups = chan.get("crossover", [])
+            for widget, group in zip(self.xo_groups, groups):
                 widget.load(group)
         else:
             self.routing.load(chan.get("routing", []),
@@ -1736,18 +1748,21 @@ class ChannelEditor(QWidget):
                     own += [b for b in core.crossover_biquads(g, rate)
                             if not core.is_bypass(b)]
 
-            curves = [(freqs, core.response_db(own, freqs, rate), ACTIVE, False)]
+            curves = [(freqs, core.response_db(own, freqs, rate),
+                       ACTIVE, False)]
 
             # Dashed: everything the driver sees, input EQ included.
             feeding = self._feeding_inputs()
             if feeding:
                 upstream: list[dict[str, float]] = []
-                for inp in feeding[:1]:      # one input's chain; sums are not modelled
+                # One input's chain; summing is not modelled.
+                for inp in feeding[:1]:
                     upstream += [core.peq_biquad(b, rate)
                                  for b in inp.get("peq", [])]
                 if any(not core.is_bypass(b) for b in upstream):
                     curves.append((freqs,
-                                   core.response_db(upstream + own, freqs, rate),
+                                   core.response_db(upstream + own, freqs,
+                                                    rate),
                                    ACCENT, True))
             self.plot.set_curves(curves)
             self.plot.set_bands(self._band_curves(freqs, rate))
@@ -1756,7 +1771,8 @@ class ChannelEditor(QWidget):
 
             if not self.is_output:
                 self.legend.setText(
-                    "Input EQ, applied before the crossover split - it reaches "
+                    "Input EQ, applied before the crossover split - it\n"
+                    "reaches "
                     "every output this input is routed to.")
             elif len(curves) > 1:
                 self.legend.setText(
@@ -2023,7 +2039,8 @@ class RewDialog(QDialog):
             "a1=...,\na2=...,\n")
         self.text.setFont(QFont("monospace", 10))
         lay.addWidget(self.text, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok
+                                   | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         lay.addWidget(buttons)
@@ -2082,7 +2099,8 @@ class HelpDialog(QDialog):
         # widget's default near-black on this theme's dark background.
         self.text.setStyleSheet(
             f"QTextBrowser {{ background: {BG}; color: {FG};"
-            f" border: 1px solid {LINE}; border-radius: 6px; padding: 10px; }}")
+            f" border: 1px solid {LINE}; border-radius: 6px;"
+            f" padding: 10px; }}")
         self.text.document().setDefaultStyleSheet(
             f"a {{ color: {ACCENT}; }}"
             f"code, pre {{ color: {ACTIVE}; }}"
@@ -2386,7 +2404,8 @@ class MainWindow(QMainWindow):
         names = [c.get("name", "") for c in
                  self.project["inputs"] + self.project["outputs"]]
         fm = self.chan_list.fontMetrics()
-        return max(36, max((fm.horizontalAdvance(n) for n in names), default=36))
+        widest = max((fm.horizontalAdvance(n) for n in names), default=36)
+        return max(36, widest)
 
     def _add_channel_row(self, kind: str, i: int, chan: dict[str, Any],
                          detail: str, dim: bool):
@@ -2627,7 +2646,8 @@ class MainWindow(QMainWindow):
         self.update_warning()
         active = sum(1 for r in readings
                      for g in r.get("crossover", []) if g.get("active"))
-        unread = len([b for ch in self.project["outputs"] + self.project["inputs"]
+        every = self.project["outputs"] + self.project["inputs"]
+        unread = len([b for ch in every
                       for b in ch.get("peq", [])
                       if b.get("read_state") == "unreadable"])
         msg = (f"Read {len(readings)} outputs, "
@@ -2637,7 +2657,8 @@ class MainWindow(QMainWindow):
                     f"{self._last_config.name} (the device does not report "
                     "them)")
         elif unread:
-            msg += (f"  -  {unread} PEQ bands unavailable: this device reports "
+            msg += (f"  -  {unread} PEQ bands unavailable: this device\n"
+                    "reports "
                     "neither PEQ nor routing, and no Device Console settings "
                     "file was found. Use Import XML.")
         self.statusBar().showMessage(msg, 15000)
@@ -2684,7 +2705,8 @@ class MainWindow(QMainWindow):
         if not self.have_read:
             resp = QMessageBox.warning(
                 self, "Overwrite device configuration?",
-                "You have not read the current configuration from the device.\n\n"
+                "You have not read the current configuration from the\n"
+                "device.\n\n"
                 "Applying now writes this project over whatever is loaded, "
                 "including any crossover you set up elsewhere.\n\n"
                 "Read from device first?",
@@ -2756,7 +2778,8 @@ class MainWindow(QMainWindow):
             resp = QMessageBox.warning(
                 self, "Different DSP version",
                 f"That export is for dsp_version {dsp}, but this device "
-                f"reports {mine}.\n\nAddresses may not line up. Import anyway?",
+                f"reports {mine}.\n\nAddresses may not line up. Import\n"
+                "anyway?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if resp != QMessageBox.Yes:
                 return
@@ -2810,7 +2833,8 @@ class MainWindow(QMainWindow):
 
     def on_load(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load project", str(self.project_path.parent), "JSON (*.json)")
+            self, "Load project", str(self.project_path.parent),
+            "JSON (*.json)")
         if not path:
             return
         try:

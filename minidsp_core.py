@@ -33,7 +33,6 @@ import re
 import struct
 import subprocess
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -135,7 +134,8 @@ def butterworth_qs(order: int) -> tuple[list[float], bool]:
 
 
 def design_crossover(mode: str, alignment: str, order: int, freq: float,
-                     rate: int, max_biquads: int = 4) -> list[dict[str, float]]:
+                     rate: int,
+                     max_biquads: int = 4) -> list[dict[str, float]]:
     """Crossover as a biquad cascade.
 
     Linkwitz-Riley order N is two cascaded Butterworths of order N/2, which is
@@ -228,7 +228,8 @@ def response_phase(biquads: Iterable[dict[str, float]], freqs: Iterable[float],
     return out
 
 
-def log_freqs(n: int = 240, lo: float = 20.0, hi: float = 20000.0) -> list[float]:
+def log_freqs(n: int = 240, lo: float = 20.0,
+              hi: float = 20000.0) -> list[float]:
     return [lo * (hi / lo) ** (i / (n - 1)) for i in range(n)]
 
 
@@ -320,7 +321,8 @@ def classify_biquad(bq: dict[str, float]) -> str:
     return "other"
 
 
-def decode_biquad(bq: dict[str, float], rate: int) -> tuple[float, float] | None:
+def decode_biquad(bq: dict[str, float],
+                  rate: int) -> "tuple[float, float | None] | None":
     """Recover (f0, Q) from a 2nd-order section. Inverse of the RBJ design.
 
     From the miniDSP-convention feedback terms:
@@ -528,7 +530,7 @@ def describe_peq_band(bq: dict[str, float], slot: int,
 
 def describe_crossover_group(bqs: list[dict[str, float]], index: int,
                              rate: int) -> dict[str, Any]:
-    """One crossover group: which sections are real, and what they add up to."""
+    """One crossover group: which sections are real, and what they make."""
     sections, shapes = [], []
     for bq in bqs:
         kind = classify_biquad(bq)
@@ -729,11 +731,13 @@ class Readback:
 
     def read_all(self, n_outputs: int | None = None) -> list[dict[str, Any]]:
         n = n_outputs if n_outputs is not None else len(self.amap.outputs)
-        return [self.read_output(i) for i in range(min(n, len(self.amap.outputs)))]
+        total = len(self.amap.outputs)
+        return [self.read_output(i) for i in range(min(n, total))]
 
     def read_inputs(self, n_inputs: int | None = None) -> list[dict[str, Any]]:
         n = n_inputs if n_inputs is not None else len(self.amap.inputs)
-        return [self.read_input(i) for i in range(min(n, len(self.amap.inputs)))]
+        total = len(self.amap.inputs)
+        return [self.read_input(i) for i in range(min(n, total))]
 
 
 # ---------------------------------------------------------------------------
@@ -768,7 +772,8 @@ def default_input(index: int, n_out: int, n_peq: int) -> dict[str, Any]:
                         for o in range(n_out)]}
 
 
-def new_project(n_in: int, n_out: int, n_peq: int, rate: int) -> dict[str, Any]:
+def new_project(n_in: int, n_out: int, n_peq: int,
+                rate: int) -> dict[str, Any]:
     return {"version": 1, "name": "untitled", "rate": rate,
             "inputs": [default_input(i, n_out, n_peq) for i in range(n_in)],
             "outputs": [default_output(i, n_peq) for i in range(n_out)]}
@@ -983,7 +988,8 @@ def _apply_peq_readback(dst_bands: list[dict[str, Any]],
 
 def apply_readback(project: dict[str, Any],
                    readings: list[dict[str, Any]],
-                   inputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                   inputs: "list[dict[str, Any]] | None" = None,
+                   ) -> dict[str, Any]:
     """Fold live device readings into a project.
 
     Filters that match a standard alignment become editable designs; anything
@@ -1360,7 +1366,8 @@ def unstable_filters(project: dict[str, Any]) -> list[str]:
                     continue
                 bq = band.get("manual")
                 if bq and not biquad_is_stable(bq):
-                    bad.append(f"{ch.get('name', kind)} band {band.get('index', i)}")
+                    name = ch.get('name', kind)
+                    bad.append(f"{name} band {band.get('index', i)}")
     return bad
 
 
@@ -1496,7 +1503,8 @@ def decode_peq(bq: dict[str, float], rate: int):
 # has no privileged access either; it simply always has a config file, written
 # beside the device serial:
 #
-#   <documents>/miniDSP/MiniDSP Device Console/<Model>/SN<nnnnn>/setting/setting<N>.xml
+#   <documents>/miniDSP/MiniDSP Device Console/<Model>/SN<nnnnn>/
+#       setting/setting<N>.xml
 #
 # Those files are the same format as a manual export, so finding one lets the
 # app populate everything the device cannot report.

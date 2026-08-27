@@ -158,7 +158,8 @@ class NativeDevice:
         out: dict[str, Any] = {"index": index}
         with self._lock:
             if "gain" in spec:
-                out["gain"] = round(self._dev.read_floats(spec["gain"], 1)[0], 3)
+                out["gain"] = round(
+                    self._dev.read_floats(spec["gain"], 1)[0], 3)
             if "delay" in spec:
                 raw = self._dev.read_floats(spec["delay"], 1)[0]
                 out["delay"] = round(delay_ms_from_raw(raw, self.rate), 4)
@@ -174,8 +175,9 @@ class NativeDevice:
         out["peq"] = [describe_peq_band(as_biquad(peq_blocks[a]), i, self.rate)
                       for i, a in enumerate(peq_addrs)]
         out["crossover"] = [
-            describe_crossover_group([as_biquad(xo_blocks[a][k * 5:(k + 1) * 5])
-                             for k in range(4)], gi, self.rate)
+            describe_crossover_group(
+                [as_biquad(xo_blocks[a][k * 5:(k + 1) * 5])
+                 for k in range(4)], gi, self.rate)
             for gi, a in enumerate(spec.get("xover_groups", []))
         ]
         return out
@@ -185,7 +187,8 @@ class NativeDevice:
         out: dict[str, Any] = {"index": index}
         with self._lock:
             if "gain" in spec:
-                out["gain"] = round(self._dev.read_floats(spec["gain"], 1)[0], 3)
+                out["gain"] = round(
+                    self._dev.read_floats(spec["gain"], 1)[0], 3)
             if "enable" in spec:
                 _set_gate(out, self._dev.read_ints(spec["enable"], 1)[0])
             peq_addrs = spec.get("peq", [])
@@ -195,11 +198,13 @@ class NativeDevice:
         return out
 
     def read_all(self, n: int | None = None) -> list[dict[str, Any]]:
-        n = len(self.amap.outputs) if n is None else min(n, len(self.amap.outputs))
+        total = len(self.amap.outputs)
+        n = total if n is None else min(n, total)
         return [self.read_output(i) for i in range(n)]
 
     def read_inputs(self, n: int | None = None) -> list[dict[str, Any]]:
-        n = len(self.amap.inputs) if n is None else min(n, len(self.amap.inputs))
+        total = len(self.amap.inputs)
+        n = total if n is None else min(n, total)
         return [self.read_input(i) for i in range(n)]
 
     # -- writes -----------------------------------------------------------
@@ -212,8 +217,8 @@ class NativeDevice:
                 self._dev.set_master_mute(bool(fields["mute"]))
             if "source" in fields:
                 s = fields["source"]
-                idx = SOURCES.index(str(s).lower()) if str(s).lower() in SOURCES \
-                    else int(s)
+                name = str(s).lower()
+                idx = SOURCES.index(name) if name in SOURCES else int(s)
                 self._dev.set_source(idx)
             if "preset" in fields:
                 self._dev.set_preset(int(fields["preset"]))
@@ -227,10 +232,12 @@ class NativeDevice:
                 if "gain" in out and "gain" in spec:
                     self._dev.write_float(spec["gain"], float(out["gain"]))
                 if "delay" in out and "delay" in spec:
-                    self._dev.write_int(spec["delay"],
-                                        _delay_samples(out["delay"], self.rate))
+                    self._dev.write_int(
+                        spec["delay"],
+                        _delay_samples(out["delay"], self.rate))
                 if "invert" in out and "invert" in spec:
-                    self._dev.write_int(spec["invert"], 1 if out["invert"] else 0)
+                    self._dev.write_int(spec["invert"],
+                                        1 if out["invert"] else 0)
                 if "mute" in out and "enable" in spec:
                     self._dev.write_int(spec["enable"], _gate(out["mute"]))
 

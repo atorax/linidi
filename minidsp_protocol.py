@@ -110,7 +110,7 @@ EE_SOURCE = 0xFFD9
 EE_MASTER_VOLUME = 0xFFDA
 EE_MUTE = 0xFFDB
 EE_SERIAL32 = 0xFFFC          # u32 variant
-EE_SERIAL16 = 0xFFFE          # u16 variant, big-endian, used by the Flex family
+EE_SERIAL16 = 0xFFFE          # u16, big-endian; used by the Flex family
 
 
 class ProtocolError(RuntimeError):
@@ -176,7 +176,8 @@ def discover() -> list[DeviceInfo]:
         # vendor-specific endpoint lives on the devices seen so far.
         key = (d["vendor_id"], d["product_id"], d.get("serial_number"))
         cur = seen.get(key)
-        if cur is None or d.get("interface_number", -1) > cur.get("interface_number", -1):
+        if (cur is None or d.get("interface_number", -1)
+                > cur.get("interface_number", -1)):
             seen[key] = d
     return [DeviceInfo(path=d["path"], vendor_id=d["vendor_id"],
                        product_id=d["product_id"]) for d in seen.values()]
@@ -471,7 +472,8 @@ class MiniDSP:
         """DSP parameter read. The device serves at most 14 floats per call."""
         if not 1 <= count <= 14:
             raise ValueError("count must be 1..14")
-        r = self.exchange(CMD_READ_DSP_PARAM, addr_bytes(addr) + bytes([count]))
+        r = self.exchange(CMD_READ_DSP_PARAM,
+                          addr_bytes(addr) + bytes([count]))
         body = r[3:3 + count * 4]
         if len(body) < count * 4:
             raise ProtocolError(f"short float reply ({len(body)} bytes)")
@@ -504,7 +506,7 @@ class MiniDSP:
     # -- filters ----------------------------------------------------------
 
     def write_biquad(self, addr: int, coeffs: list[float]) -> None:
-        """Five coefficients, b0 b1 b2 a1 a2, in miniDSP's negated convention."""
+        """Five coefficients, b0 b1 b2 a1 a2, in miniDSP convention."""
         if len(coeffs) != 5:
             raise ValueError("a biquad takes exactly 5 coefficients")
         payload = (bytes([MODE_ALT]) + addr_bytes(addr) + struct.pack(">H", 0)
@@ -512,7 +514,8 @@ class MiniDSP:
         self.command(CMD_SET_DSP_FILTER_BIQUADS, payload)
 
     def set_bypass(self, addr: int, bypassed: bool) -> None:
-        """Bypass a filter. The flag rides in the mode byte, not the payload."""
+        """Bypass a filter: the flag rides in the mode byte, not the
+        payload."""
         payload = (bytes([0x80 if bypassed else 0x00]) + addr_bytes(addr)
                    + struct.pack(">H", 0))
         self.command(CMD_BYPASS_DSP_FILTER, payload)

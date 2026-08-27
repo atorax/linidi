@@ -30,7 +30,8 @@ SYM_RE = re.compile(r"pub const (\w+): u16 = (\d+);")
 # Each `Output { ... }` / `Input { ... }` block, non-greedy up to the closing
 # brace that sits at the same indentation the block opened at.
 BLOCK_RE = re.compile(
-    r"\n(?P<indent>\s*)(?P<kind>Output|Input)\s*\{(?P<body>.*?)\n(?P=indent)\}",
+    r"\n(?P<indent>\s*)(?P<kind>Output|Input)\s*\{"
+    r"(?P<body>.*?)\n(?P=indent)\}",
     re.DOTALL,
 )
 
@@ -155,7 +156,8 @@ def main(argv: list[str]) -> int:
         target = outdir / f"{name}.json"
         target.write_text(json.dumps(doc, indent=2))
         peq_n = len(layout["outputs"][0].get("peq", []))
-        print(f"  {name}: {n_in} in / {n_out} out, {peq_n} PEQ -> {target.name}")
+        print(f"  {name}: {n_in} in / {n_out} out, {peq_n} PEQ "
+              f"-> {target.name}")
         count += 1
 
     print(f"\n{count} device map(s) written to {outdir}")
