@@ -127,6 +127,9 @@ READ_ECHO_BYTES = {
 # writes in a row mean the device has stopped listening rather than merely
 # being slow.
 ACK_TIMEOUT_MS = 200
+
+# The device serves at most this many floats in one reply.
+MAX_FLOATS_PER_READ = 14
 MAX_UNACKED_WRITES = 8
 
 # Parameter-write modes. See the module docstring: 0xa0 is the one that works.
@@ -391,10 +394,12 @@ class MiniDSP:
 
         The device answers on an interrupt endpoint that keeps queueing, so an
         abandoned or late reply stays buffered and every subsequent read
-        returns the *previous* answer. Since replies echo only the command
-        byte, a stale one for a different address passes a naive check --
-        which shows up as values that are correct but belong to the request
-        before.
+        returns the *previous* answer. A reply carries the command it answers
+        but not which address was asked for, so a stale one for a different
+        address of the same command passes a naive check -- which shows up as
+        values that are correct but belong to the request before. That is what
+        the address echo in exchange() is matched against; draining is what
+        stops the queue getting one behind in the first place.
         """
         dropped = 0
         for _ in range(limit):
@@ -409,9 +414,10 @@ class MiniDSP:
     def command(self, cmd: int, args: Iterable[int] = ()) -> bytes:
         """Send a write and read its acknowledgement.
 
-        A write is answered by an ack rather than by an echo of the command,
-        so there is nothing to match the reply against and it is simply read
-        and discarded.
+        A write is answered by a status reply: a byte saying accepted or
+        refused, then the command it answers. Both halves are used -- the
+        status for the verdict, the echo to be sure the verdict belongs to
+        this command and is not a late one from the last.
 
         A single missing ack is tolerated: the device is occasionally slow and
         the write itself usually landed. A long run of them is not, because
@@ -436,7 +442,8 @@ class MiniDSP:
                 raise ProtocolError(
                     f"the device stopped acknowledging writes after "
                     f"{self._unacked} in a row; it may have been unplugged or "
-                    f"stopped responding. Nothing further was written.")
+                    f"stopped responding. Nothing further was written."
+                ) from None
             return b""
         self._unacked = 0
         status = reply[0]
@@ -453,7 +460,12 @@ class MiniDSP:
 
     def exchange(self, cmd: int, args: Iterable[int] = (),
                  retries: int = 2) -> bytes:
-        """Send a command and return the reply body, minus the size byte."""
+        """Send a command and return the reply body, minus the size byte.
+
+        Retries cover a lost or stale reply. A reply that says the device
+        refused the command is not retried: asking again gets the same answer,
+        and reporting it as "unexpected" hid what had actually happened.
+        """
         echo = READ_ECHO_BYTES.get(cmd)
         expect = bytes(args)[:echo] if echo else None
         last = None
@@ -466,6 +478,14 @@ class MiniDSP:
             except ProtocolError as exc:
                 last = exc
                 continue
+            if (len(reply) > 1 and reply[0] in (ACK_ERROR, ACK_BAD_SIZE)
+                    and reply[1] == cmd):
+                # An explicit refusal. Retrying it would only ask again and
+                # be told the same thing.
+                raise ProtocolError(
+                    f"the device rejected command {cmd:#04x}"
+                    + (" (malformed payload size)"
+                       if reply[0] == ACK_BAD_SIZE else ""))
             if reply and reply[0] == cmd:
                 # Reads echo the address; matching it rejects a stale reply
                 # that happens to share the command byte.
@@ -562,9 +582,15 @@ class MiniDSP:
         return body
 
     def read_floats(self, addr: int, count: int) -> list[float]:
-        """DSP parameter read. The device serves at most 14 floats per call."""
-        if not 1 <= count <= 14:
-            raise ValueError("count must be 1..14")
+        """DSP parameter read, up to the device's per-reply limit.
+
+        Reads into filter memory are aligned down to a biquad boundary,
+        so an address that is not a block base returns the block that
+        contains it rather than the floats asked for.
+        """
+        if not 1 <= count <= MAX_FLOATS_PER_READ:
+            raise ValueError(
+                f"count must be 1..{MAX_FLOATS_PER_READ}")
         r = self.exchange(CMD_READ_DSP_PARAM,
                           addr_bytes(addr) + bytes([count]))
         body = r[3:3 + count * 4]

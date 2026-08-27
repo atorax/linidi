@@ -24,6 +24,7 @@ import threading
 from typing import Any
 
 import minidsp_protocol as mp
+from minidsp_protocol import MAX_FLOATS_PER_READ
 from minidsp_core import (COEFF_KEYS, MAX_DELAY_SAMPLES,
                           XOVER_SLOTS, AddressMap, as_biquad,
                           delay_ms_from_raw,
@@ -111,10 +112,24 @@ class NativeDevice:
     # -- reads ------------------------------------------------------------
 
     def _floats(self, addr: int, count: int) -> list[float]:
-        """Read `count` floats, chunked to the device's 14-per-call limit."""
+        """Read `count` floats from filter memory, in whole biquads.
+
+        Reads into filter memory are aligned down to a biquad boundary by the
+        device: asking for base+14 returns the block starting at base+10.
+        Chunking at the device's 14-float limit therefore asked for an address
+        it would not honour, and the answer overlapped what had already been
+        read -- a crossover group's third and fourth sections came back as a
+        copy of its second. Nothing showed it while the only groups in use
+        were two sections long and fitted inside the first chunk.
+
+        Chunks are whole biquads, so every request is aligned by construction.
+        `addr` is expected to be a block base, which is what the address maps
+        record.
+        """
+        step = (MAX_FLOATS_PER_READ // BIQUAD_FLOATS) * BIQUAD_FLOATS
         out: list[float] = []
         while len(out) < count:
-            n = min(14, count - len(out))
+            n = min(step, count - len(out))
             out.extend(self._dev.read_floats(addr + len(out), n))
         return out
 
@@ -318,6 +333,10 @@ class NativeDevice:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+# Floats in one biquad, which is also the granularity the device
+# aligns filter-memory reads to.
+BIQUAD_FLOATS = 5
 
 GATE_MUTED, GATE_PASSING = 1, 2
 
