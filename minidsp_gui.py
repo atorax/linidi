@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-minidsp-gui -- a desktop tuning front-end for miniDSP hardware on Linux.
+LiniDi -- a desktop tuning front-end for miniDSP hardware on Linux.
 
     python3 minidsp_gui.py
 
@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import re
 import sys
 import time
@@ -130,6 +131,11 @@ def peq_badge(index: int, size: int = 20, active: bool = True) -> QPixmap:
 # in the stylesheet that nothing else can see.
 LIST_ITEM_PAD_Y = 6
 
+# The response plot's frequency axis, precomputed: _fx runs a few thousand
+# times per repaint.
+LOG_F_LO = math.log10(20.0)
+LOG_F_SPAN = math.log10(20000.0) - LOG_F_LO
+
 # Said in two places -- a crossover group and a PEQ band -- about the same
 # condition, so it is written once.
 UNKNOWN_BYPASS_TIP = (
@@ -231,7 +237,7 @@ def doc_sections() -> list[tuple[str, str]]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return [("About", "# minidsp-gui\n\nDocumentation was not bundled "
+        return [("About", "# LiniDi\n\nDocumentation was not bundled "
                           "with this build. The README is in the source "
                           "repository.")]
     sections, title, buf = [], "Overview", []
@@ -551,9 +557,7 @@ class ResponsePlot(QWidget):
         self.update()
 
     def _fx(self, f, w):
-        import math
-        lo, hi = math.log10(20.0), math.log10(20000.0)
-        return (math.log10(f) - lo) / (hi - lo) * w
+        return (math.log10(f) - LOG_F_LO) / (LOG_F_SPAN) * w
 
     def _fy(self, db, h):
         db = max(self.DB_MIN, min(self.DB_MAX, db))
@@ -1042,6 +1046,8 @@ class PeqTable(QTableWidget):
     def store(self) -> list[dict[str, Any]]:
         for r, b in enumerate(self.bands):
             holder = self.cellWidget(r, self.C_ON)
+            if holder is None:          # rows not built yet; nothing to read
+                continue
             cb = holder.findChild(QCheckBox)
             if cb.checkState() != Qt.PartiallyChecked:
                 b["enabled"] = cb.isChecked()
@@ -1162,12 +1168,13 @@ class BiquadTable(QTableWidget):
 
 
 class ChainBar(QWidget):
-    """The signal path, as real controls rather than a sentence.
+    """Where this channel sits in the signal path, as controls not prose.
 
-    Each stage is a button carrying its current value, so the bar doubles as a
-    status readout: you can see at a glance that this driver is fed by In 1
-    with 10 EQ bands, high-passed at 2600 Hz and padded 7.2 dB, and click any
-    of those to go and change it.
+    Names only. Each stage is a button that navigates -- to the channel
+    feeding this one, or to the control that owns that part of the chain.
+    The stages used to carry their current values as well, which was a second
+    copy of settings already on the page the bar sits above, and wide enough
+    to need a scrollbar of its own.
     """
 
     navigate = Signal(str, int)      # (kind, index) -> select that channel
@@ -1211,7 +1218,14 @@ class ChainBar(QWidget):
                 w.deleteLater()
 
     def set_stages(self, stages: list[dict[str, Any]]):
-        """stages: {label, detail, target, current, enabled}"""
+        """Rebuild the bar.
+
+        Each stage is {label, sizer, target, current, tooltip}, all optional
+        but `label`. `sizer` is the widest text that stage can ever hold, so
+        the row keeps its geometry instead of jumping when a name changes;
+        `target` makes the stage clickable, either "input:N"/"output:N" to
+        navigate or "focus:name" to jump to a control on this page.
+        """
         self._clear()
         for i, st in enumerate(stages):
             if i:
@@ -1219,9 +1233,7 @@ class ChainBar(QWidget):
                 arrow.setStyleSheet(f"color: {LINE}; font-size: 15px;")
                 self._lay.addWidget(arrow)
 
-            label = st["label"]
-            detail = st.get("detail")
-            text = f"{label}   {detail}" if detail else label
+            text = st["label"]
             btn = QPushButton(text)
             # Fixed width per stage, measured from the widest value that stage
             # can ever hold. Sizing to the current text makes the whole bar
@@ -2145,7 +2157,7 @@ class MainWindow(QMainWindow):
         self._topology_dsp: int | None = None
         self._last_config = None
 
-        self.setWindowTitle("minidsp-gui")
+        self.setWindowTitle("LiniDi")
         self.resize(1560, 1044)
 
         central = QWidget()

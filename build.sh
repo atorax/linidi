@@ -33,7 +33,7 @@ print(f"PySide6 {PySide6.__version__}  (LGPL v3 -- record this version)")
 print(f"pyusb   {usb.__version__}")
 EOF
 
-"$PYI" --onefile --name minidsp-gui --noconfirm \
+"$PYI" --onefile --name linidi --noconfirm \
     --add-data "address_maps:address_maps" \
     --add-data "icons:icons" \
     --add-data "NOTICE:." \
@@ -42,4 +42,4 @@ EOF
     minidsp_gui.py
 
 echo
-echo "Built dist/minidsp-gui  ($(du -h dist/minidsp-gui | cut -f1))"
+echo "Built dist/linidi  ($(du -h dist/linidi | cut -f1))"

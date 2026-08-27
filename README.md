@@ -1,4 +1,4 @@
-# minidsp-gui
+# LiniDi
 
 A desktop tuning application for miniDSP hardware on Linux.
 

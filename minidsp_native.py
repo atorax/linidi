@@ -24,9 +24,9 @@ import threading
 from typing import Any
 
 import minidsp_protocol as mp
-from minidsp_core import (AddressMap, as_biquad,
+from minidsp_core import (PRODUCT_NAMES, AddressMap, as_biquad,
                           describe_crossover_group, describe_peq_band,
-                          delay_ms_from_raw)
+                          delay_ms_from_raw, product_name)
 
 # (hw_id, dsp_version) -> address map name.
 #
@@ -39,20 +39,6 @@ DEVICE_MAPS: dict[tuple[int, int | None], str] = {
     (30, 111): "flex8",      # Dirac variant, same DSP layout
     (30, None): "flex8",
 }
-
-
-# Display names, since a map name like "flex8" is not what is on the box.
-PRODUCT_NAMES: dict[str, str] = {
-    "flex8": "Flex 8", "flex": "Flex", "flexdl": "Flex DL",
-    "flexhtx": "Flex HTx", "m2x4hd": "2x4 HD", "ddrc24": "DDRC-24",
-    "ddrc88bm": "DDRC-88BM", "shd": "SHD", "c8x12v2": "C-DSP 8x12",
-    "m10x10hd": "10x10 HD", "m4x10hd": "4x10 HD", "msharc4x8": "miniSHARC 4x8",
-    "nanodigi2x8": "nanoDIGI 2x8", "m2x4": "2x4",
-}
-
-
-def product_name(map_name: str) -> str:
-    return PRODUCT_NAMES.get(map_name, map_name)
 
 
 def map_for(hw_id: int, dsp_version: int | None = None) -> str | None:
