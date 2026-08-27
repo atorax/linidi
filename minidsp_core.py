@@ -148,11 +148,24 @@ def _first_order(kind: str, freq: float, rate: int) -> dict[str, float]:
 
 
 def butterworth_qs(order: int) -> tuple[list[float], bool]:
+    """Section Qs for a Butterworth of `order`, and whether one pole is real.
+
+    The poles sit on a circle, and each conjugate pair becomes a section whose
+    Q is 1 / (2 cos t), t being the pair's angle from the negative real axis.
+    Where those angles fall depends on the parity of the order: an odd order
+    puts one pole *on* the real axis and shifts the pairs around it.
+
+    That parity term was missing, so odd orders came out with the angles of an
+    even one. A 3rd-order Butterworth was built from Q = 0.577 instead of
+    Q = 1.0, and measured -7.78 dB at its own corner where -3 dB is the
+    definition. Even orders were unaffected and are unchanged.
+    """
     if order < 1:
         raise ValueError("order must be >= 1")
-    qs = [1.0 / (2.0 * math.cos((2.0 * k + 1.0) * math.pi / (2.0 * order)))
-          for k in range(order // 2)]
-    return qs, order % 2 == 1
+    odd = order % 2
+    qs = [1.0 / (2.0 * math.cos((2 * k - 1 + odd) * math.pi / (2 * order)))
+          for k in range(1, order // 2 + 1)]
+    return qs, bool(odd)
 
 
 def design_crossover(mode: str, alignment: str, order: int, freq: float,
@@ -411,6 +424,16 @@ def identify_alignment(sections: list[tuple[float, float]]) -> tuple[str, int]:
         # a 6 dB/oct Butterworth.
         return ("linkwitz-riley", 2) if n_first == 2 else ("butterworth",
                                                            n_first)
+
+    if n_first == 2 and order % 4 == 2:
+        # A Linkwitz-Riley whose half-order is odd: each half is a Butterworth
+        # with one real pole, so the pair contributes two 1st-order sections
+        # and each of its Qs twice. LR36 is the case that matters, and it was
+        # falling through to "custom" because the branch below only considered
+        # halves with no real pole.
+        half_qs, half_first = butterworth_qs(order // 2)
+        if half_first and matches(qs, half_qs + half_qs):
+            return "linkwitz-riley", order
 
     if not n_first:
         # Linkwitz-Riley of order N is Butterworth(N/2) cascaded twice, so

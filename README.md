@@ -213,6 +213,12 @@ Things that cost real debugging time:
 - **Bessel sections are not all at the corner frequency.** Each has its own
   ratio, and designing them all at the corner gives a cascade that is -4.8 dB
   at its own corner at 2nd order and -12.2 dB at 8th.
+- **A Butterworth's section Qs depend on the parity of its order.** An odd
+  order puts one pole on the real axis and shifts the conjugate pairs around
+  it, so `1 / (2 cos((2k-1)pi / 2N))` is right for even orders and wrong for
+  odd ones. A 3rd-order built the even way uses Q = 0.577 where the answer is
+  1.0, and measures -7.8 dB at its own corner. Linkwitz-Riley of order 6
+  inherits it twice over, at -15.6 dB.
 - **Gain writes are not idempotent.** Reading a gain and writing it straight
   back moves it further down, about 0.17 dB a time, without converging.
 - **Bypass is a separate opcode** (`0x19`) stored apart from the coefficients,

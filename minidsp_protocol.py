@@ -61,6 +61,9 @@ REPORT_LEN = 64
 # artefact of reading Device Console, and the next person to extend this
 # should not have to derive it again. Unused entries are reference, not dead
 # code.
+#
+# Checked member by member against Device Console's own DspCmdCode enum: all
+# 39 codes, every value matching.
 CMD_RESET = 0x03
 CMD_WRITE_FLASH = 0x04
 CMD_READ_FLASH = 0x05
@@ -73,6 +76,8 @@ CMD_MASTER_MUTE = 0x17
 CMD_BYPASS_DSP_FILTER = 0x19
 CMD_OLED_BRIGHTNESS = 0x1A
 CMD_OLED_IDLE_TIME = 0x1B
+CMD_DRE_STATUS = 0x1E
+CMD_BLUETOOTH_AT_CMD = 0x21
 CMD_RELOAD_E2PROM_HDR = 0x24
 CMD_CHANGE_PRESET = 0x25
 CMD_COPY_PRESET = 0x27
@@ -84,10 +89,29 @@ CMD_WRITE_FIR_TAPS_TO_FLASH = 0x3A
 CMD_RELOAD_DSP_PARAM = 0x3B
 CMD_WRITE_FLASH_FULL_ADDR = 0x3C
 CMD_READ_FLASH_FULL_ADDR = 0x3D
+CMD_ENTER_BOOTLOADER = 0x3E
 CMD_BYPASS_FIR = 0x3F
 CMD_DSP_VERSION = 0x40
 CMD_MASTER_VOL = 0x42
 CMD_GEN_NOISE_CH = 0x45
+CMD_READ_DFLASH_ID = 0x46
+CMD_WRITE_DFLASH_ID = 0x49
+CMD_ERASE_FLASH = 0x50
+CMD_COM_FW_UPGRADE = 0x52
+CMD_EARC = 0x53
+CMD_LOG_CTRL = 0x54
+CMD_RESET_COMPLETED = 0xAA
+CMD_PRESET_CHANGE_COMPLETED = 0xAB
+CMD_WISA = 0xF0
+
+# The first byte of a reply is its status, and the second echoes the command
+# it answers. Anything else is a data reply whose first byte is the payload
+# size. Taken from Device Console's own decoder and confirmed against a Flex 8:
+# a no-op write answers 01, and an undefined opcode answers 00.
+ACK_ERROR = 0x00
+ACK_OK = 0x01
+ACK_COMPLETED = 0x02      # ResetCompleted / PresetChangeCompleted follow
+ACK_BAD_SIZE = 0xFF       # the device reporting a malformed payload size
 
 # How many address bytes each read command echoes back at the head of its
 # reply. Matching them is what distinguishes a real answer from a stale one
@@ -110,7 +134,9 @@ MODE_APPLY = 0xA0
 MODE_ALT = 0x80
 
 # EEPROM addresses (byte-addressed space, reachable via CMD_READ_FLASH).
-EE_FIRMWARE_VERSION = 0xFFA1
+# Every one of these matches the address Device Console reads for the same
+# thing, checked against its own source.
+EE_DSP_ID = 0xFFA1            # Device Console calls this the DSP id
 EE_PRESET = 0xFFD8
 EE_SOURCE = 0xFFD9
 EE_MASTER_VOLUME = 0xFFDA
@@ -340,11 +366,21 @@ class MiniDSP:
     def send(self, cmd: int, args: Iterable[int] = ()) -> None:
         self._t.write(frame(cmd, args))
 
-    def recv(self, timeout_ms: int | None = None) -> bytes:
+    def recv_raw(self, timeout_ms: int | None = None) -> bytes:
+        """One report, exactly as it arrived."""
         data = self._t.read(timeout_ms)
         if not data:
             raise ProtocolError("timed out waiting for a reply")
-        buf = bytes(data)
+        return bytes(data)
+
+    def recv(self, timeout_ms: int | None = None) -> bytes:
+        """The body of a data reply: the command byte and its payload.
+
+        A status reply -- an acknowledgement or an error, whose first byte is
+        a status rather than a length -- comes back whole, since there is no
+        body to take out of it. command() is what interprets those.
+        """
+        buf = self.recv_raw(timeout_ms)
         size = buf[0]
         if size == 0 or size > len(buf):
             return buf
@@ -382,10 +418,15 @@ class MiniDSP:
         every write after that point would also be silently accepted and the
         caller would finish an Apply believing a configuration had been
         written that never left the machine.
+
+        A reply that says the command was *rejected* raises. The device
+        distinguishes the two -- a no-op write answers 01, an undefined
+        opcode answers 00 -- and that verdict used to be discarded, so a
+        refused write and an accepted one were indistinguishable.
         """
         self.send(cmd, args)
         try:
-            reply = self.recv(timeout_ms=ACK_TIMEOUT_MS)
+            reply = self.recv_raw(timeout_ms=ACK_TIMEOUT_MS)
         except ProtocolError:
             # No ack arrived in time; make sure a late one cannot be mistaken
             # for the answer to whatever is asked next.
@@ -398,6 +439,16 @@ class MiniDSP:
                     f"stopped responding. Nothing further was written.")
             return b""
         self._unacked = 0
+        status = reply[0]
+        echoed = reply[1] if len(reply) > 1 else None
+        # The echo is required before believing a rejection: a stale reply
+        # left over from an earlier command would otherwise be read as this
+        # one failing.
+        if status in (ACK_ERROR, ACK_BAD_SIZE) and echoed == cmd:
+            raise ProtocolError(
+                f"the device rejected command {cmd:#04x}"
+                + (" (malformed payload size)" if status == ACK_BAD_SIZE
+                   else ""))
         return reply
 
     def exchange(self, cmd: int, args: Iterable[int] = (),
@@ -442,9 +493,15 @@ class MiniDSP:
         return r[1], r[2], r[3]
 
     def dsp_version(self) -> int:
-        """DSP program version, which lives in EEPROM rather than behind
-        CMD_DSP_VERSION (that opcode answers something else on this family)."""
-        return self.read_memory(EE_FIRMWARE_VERSION, 1)[0]
+        """The DSP id, which is what picks an address map.
+
+        Read from EEPROM rather than with CMD_DSP_VERSION, because that opcode
+        answers a different number: on a Flex 8 it returns 33 where the id at
+        0xFFA1 is 110, and 110 is the value the device profiles are keyed on.
+        Device Console reads the same address and calls it the DSP id, which
+        is the name used here.
+        """
+        return self.read_memory(EE_DSP_ID, 1)[0]
 
     def serial(self) -> int:
         """Board serial, stored with 900000 subtracted.
@@ -576,5 +633,14 @@ class MiniDSP:
     def set_source(self, index: int) -> None:
         self.command(CMD_CHANGE_AUDIO_SRC, bytes([index & 0xFF]))
 
-    def set_preset(self, index: int) -> None:
-        self.command(CMD_CHANGE_PRESET, bytes([index & 0xFF, 0]))
+    def set_preset(self, index: int, reset: bool = True) -> None:
+        """Switch preset, reloading the DSP so the new one takes effect.
+
+        The second byte asks the device to reset after switching. It was being
+        sent as 0, which was a guess; both reference implementations send 1 --
+        Device Console's command defaults to it, and minidsp-rs names the
+        field `reset` and passes true. Without it the preset changes without
+        the DSP being reloaded.
+        """
+        self.command(CMD_CHANGE_PRESET,
+                     bytes([index & 0xFF, 1 if reset else 0]))

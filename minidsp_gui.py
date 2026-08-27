@@ -810,12 +810,16 @@ class CrossoverGroup(QGroupBox):
         prev = self.order.currentText()
         self.order.blockSignals(True)
         self.order.clear()
+        # Every order that fits the four biquad slots a group has. LR36 and
+        # the odd Butterworths above 3 were missing; Device Console offers
+        # them, they fit, and they round-trip.
         if align == "linkwitz-riley":
-            items = [("2", "LR12"), ("4", "LR24"), ("8", "LR48")]
+            items = [(str(o), f"LR{o * 6}") for o in (2, 4, 6, 8)]
         elif align == "bessel":
             items = [(str(o), f"{o * 6} dB/oct") for o in (2, 4, 6, 8)]
         elif align == "butterworth":
-            items = [(str(o), f"{o * 6} dB/oct") for o in (1, 2, 3, 4, 6, 8)]
+            items = [(str(o), f"{o * 6} dB/oct")
+                     for o in (1, 2, 3, 4, 5, 6, 7, 8)]
         else:
             items = []
         for value, label in items:
