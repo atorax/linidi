@@ -890,7 +890,7 @@ def provenance_item(b: dict[str, Any]) -> QTableWidgetItem:
         label, colour = "not readable", DANGER
         tip = ("The device does not report PEQ contents, so this band was not "
                "read.\nThe values shown are from the project, not from the "
-               "hardware.\nImport a Device Console export to load the\n"
+               "hardware.\nImport a Device Console export to load the "
                "real ones.")
     elif state == "config":
         label, colour = "from config", ACCENT
@@ -1504,9 +1504,6 @@ class ChannelEditor(QWidget):
         self.invert = QPushButton("Invert"); self.invert.setCheckable(True)
         self.invert.toggled.connect(self._emit)
 
-        # The delay label is held so it can be hidden along with its box.
-        # Inputs have no delay address on this hardware, and a label with
-        # nothing beside it reads as a control that has stopped working.
         self.show_phase = QCheckBox("Phase")
         self.show_phase.setToolTip(
             "Overlay phase on the response, against a right-hand scale.\n"
@@ -1517,6 +1514,9 @@ class ChannelEditor(QWidget):
         bl.addSpacing(14)
 
         gain_label = QLabel("Gain"); gain_label.setObjectName("muted")
+        # The delay label is held so it can be hidden along with its box.
+        # Inputs have no delay address on this hardware, and a label with
+        # nothing beside it reads as a control that has stopped working.
         self.delay_label = QLabel("Delay")
         self.delay_label.setObjectName("muted")
         bl.addWidget(gain_label); bl.addWidget(self.gain)
@@ -1783,7 +1783,7 @@ class ChannelEditor(QWidget):
 
             if not self.is_output:
                 self.legend.setText(
-                    "Input EQ, applied before the crossover split - it\n"
+                    "Input EQ, applied before the crossover split - it "
                     "reaches "
                     "every output this input is routed to.")
             elif len(curves) > 1:
@@ -2662,17 +2662,17 @@ class MainWindow(QMainWindow):
         unread = len([b for ch in every
                       for b in ch.get("peq", [])
                       if b.get("read_state") == "unreadable"])
-        msg = (f"Read {len(readings)} outputs, "
-               f"{active} crossover groups from the device")
+        msg = (f"Read {len(readings)} outputs and "
+               f"{len(input_readings)} inputs, "
+               f"{active} crossover groups, from the device")
         if self._last_config is not None:
             msg += (f"  -  PEQ, routing and bypass loaded from "
                     f"{self._last_config.name} (the device does not report "
                     "them)")
         elif unread:
-            msg += (f"  -  {unread} PEQ bands unavailable: this device\n"
-                    "reports "
-                    "neither PEQ nor routing, and no Device Console settings "
-                    "file was found. Use Import XML.")
+            msg += (f"  -  {unread} PEQ bands unavailable: this device "
+                    "reports neither PEQ nor routing, and no Device "
+                    "Console settings file was found. Use Import XML.")
         self.statusBar().showMessage(msg, 15000)
 
     def _read_failed(self, msg):
@@ -2681,10 +2681,6 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Read failed", msg)
 
     def on_apply(self):
-        # Bypass cannot be read back from the hardware, so if any filter's
-        # state is still unknown the app does not know what it would be
-        # writing. Refuse rather than guess: a wrong guess switches a filter
-        # on or off, and on an active crossover that reaches a driver.
         # An unstable section does not filter, it runs away, and its output
         # goes to a driver. Never write one, whatever else is in the payload.
         unstable = core.unstable_filters(self.project)
@@ -2699,6 +2695,10 @@ class MainWindow(QMainWindow):
                   "Biquad tab, or switch those bands off.")
             return
 
+        # Bypass cannot be read back from the hardware, so if any filter's
+        # state is still unknown the app does not know what it would be
+        # writing. Refuse rather than guess: a wrong guess switches a filter
+        # on or off, and on an active crossover that reaches a driver.
         unknown = core.unknown_bypass(self.project)
         if unknown:
             shown = "\n".join(f"  \u2022 {u}" for u in unknown[:10])
@@ -2717,7 +2717,7 @@ class MainWindow(QMainWindow):
         if not self.have_read:
             resp = QMessageBox.warning(
                 self, "Overwrite device configuration?",
-                "You have not read the current configuration from the\n"
+                "You have not read the current configuration from this "
                 "device.\n\n"
                 "Applying now writes this project over whatever is loaded, "
                 "including any crossover you set up elsewhere.\n\n"
@@ -2790,8 +2790,8 @@ class MainWindow(QMainWindow):
             resp = QMessageBox.warning(
                 self, "Different DSP version",
                 f"That export is for dsp_version {dsp}, but this device "
-                f"reports {mine}.\n\nAddresses may not line up. Import\n"
-                "anyway?",
+                f"reports {mine}.\n\nAddresses may not line up. "
+                "Import anyway?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if resp != QMessageBox.Yes:
                 return
