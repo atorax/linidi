@@ -2338,7 +2338,7 @@ class MainWindow(QMainWindow):
             self.daemon = self.readback = dev
             self.amap = dev.amap
             info = dev.info
-            name = native.product_name(self.amap.device)
+            name = core.product_name(self.amap.device)
             self._topology_dsp = info.dsp_version
             serial = info.serial
             rate = self.amap.rate
@@ -2376,8 +2376,17 @@ class MainWindow(QMainWindow):
                 self.read_btn.setEnabled(False)
 
         status = self.daemon.status()
-        n_in = len(status.get("input_levels", []))
-        n_out = len(status.get("output_levels", []))
+        # Channel counts come from the address map, which is what describes
+        # the device. They used to be taken from the number of meter levels
+        # reported, but three of the generated maps have no meter addresses at
+        # all -- those devices reported no levels, and the app built a project
+        # with no channels and showed an empty navigator.
+        if self.amap:
+            n_in = len(self.amap.inputs)
+            n_out = len(self.amap.outputs)
+        else:
+            n_in = len(status.get("input_levels", []))
+            n_out = len(status.get("output_levels", []))
 
         self.master.device_label.setText(
             f"{name}  sn {serial}  {n_in}in/{n_out}out  {rate} Hz  "

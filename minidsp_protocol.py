@@ -99,6 +99,12 @@ READ_ECHO_BYTES = {
     CMD_READ_FLASH_FULL_ADDR: 3,
 }
 
+# How long to wait for a write to be acknowledged, and how many unacknowledged
+# writes in a row mean the device has stopped listening rather than merely
+# being slow.
+ACK_TIMEOUT_MS = 200
+MAX_UNACKED_WRITES = 8
+
 # Parameter-write modes. See the module docstring: 0xa0 is the one that works.
 MODE_APPLY = 0xA0
 MODE_ALT = 0x80
@@ -203,6 +209,7 @@ class LibUsbTransport:
         if self.dev is None:
             raise ProtocolError("no miniDSP device found on USB")
         self.timeout_ms = timeout_ms
+        self.product_id = int(self.dev.idProduct)
         self.ep_in = self.ep_out = None
         self.interface = None
         self._detached = False
@@ -249,8 +256,10 @@ class LibUsbTransport:
         self.ep_out.write(pkt, self.timeout_ms)
 
     def read(self, timeout_ms: int | None = None) -> bytes:
-        return bytes(self.ep_in.read(REPORT_LEN,
-                                     timeout_ms or self.timeout_ms))
+        # `is None` rather than `or`: a caller asking for a 0 ms read means
+        # "do not block", and `or` would quietly give it the full default.
+        wait = self.timeout_ms if timeout_ms is None else timeout_ms
+        return bytes(self.ep_in.read(REPORT_LEN, wait))
 
     def close(self) -> None:
         try:
@@ -275,6 +284,7 @@ class HidRawTransport:
                 raise ProtocolError("no miniDSP hidraw node")
             path = found[0].path
         self.timeout_ms = timeout_ms
+        self.product_id = 0
         self.dev = hid.device()
         self.dev.open_path(path)
         self.dev.set_nonblocking(0)
@@ -285,7 +295,8 @@ class HidRawTransport:
         self.dev.write(b"\x00" + bytes(data).ljust(REPORT_LEN, b"\x00"))
 
     def read(self, timeout_ms: int | None = None) -> bytes:
-        return bytes(self.dev.read(REPORT_LEN, timeout_ms or self.timeout_ms))
+        wait = self.timeout_ms if timeout_ms is None else timeout_ms
+        return bytes(self.dev.read(REPORT_LEN, wait))
 
     def close(self) -> None:
         try:
@@ -313,6 +324,7 @@ class MiniDSP:
                     raise usb_exc from None
         self._t = transport
         self.timeout_ms = timeout_ms
+        self._unacked = 0
 
     def close(self) -> None:
         self._t.close()
@@ -359,16 +371,34 @@ class MiniDSP:
         return dropped
 
     def command(self, cmd: int, args: Iterable[int] = ()) -> bytes:
-        """Fire-and-acknowledge. Writes reply with an ack, not an echo of the
-        command, so the reply is drained but not matched."""
+        """Send a write and read its acknowledgement.
+
+        A write is answered by an ack rather than by an echo of the command,
+        so there is nothing to match the reply against and it is simply read
+        and discarded.
+
+        A single missing ack is tolerated: the device is occasionally slow and
+        the write itself usually landed. A long run of them is not, because
+        every write after that point would also be silently accepted and the
+        caller would finish an Apply believing a configuration had been
+        written that never left the machine.
+        """
         self.send(cmd, args)
         try:
-            return self.recv(timeout_ms=200)
+            reply = self.recv(timeout_ms=ACK_TIMEOUT_MS)
         except ProtocolError:
             # No ack arrived in time; make sure a late one cannot be mistaken
             # for the answer to whatever is asked next.
             self.drain(limit=2)
+            self._unacked += 1
+            if self._unacked >= MAX_UNACKED_WRITES:
+                raise ProtocolError(
+                    f"the device stopped acknowledging writes after "
+                    f"{self._unacked} in a row; it may have been unplugged or "
+                    f"stopped responding. Nothing further was written.")
             return b""
+        self._unacked = 0
+        return reply
 
     def exchange(self, cmd: int, args: Iterable[int] = (),
                  retries: int = 2) -> bytes:
@@ -428,7 +458,8 @@ class MiniDSP:
 
     def device_info(self) -> DeviceInfo:
         fw_major, fw_minor, hw_id = self.hardware_id()
-        return DeviceInfo(path=b"", vendor_id=VENDOR_ID, product_id=0,
+        return DeviceInfo(path=b"", vendor_id=VENDOR_ID,
+                          product_id=getattr(self._t, "product_id", 0),
                           serial=self.serial(), fw_major=fw_major,
                           fw_minor=fw_minor, hw_id=hw_id,
                           dsp_version=self.dsp_version())
@@ -466,7 +497,12 @@ class MiniDSP:
         args = bytes([(addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF,
                       size])
         r = self.exchange(CMD_READ_FLASH_FULL_ADDR, args)
-        return r[4:4 + size] if len(r) > 4 else b""
+        body = r[4:4 + size]
+        if len(body) < size:
+            raise ProtocolError(
+                f"short flash read at {addr:#08x}: wanted {size} bytes, got "
+                f"{len(body)}")
+        return body
 
     def read_floats(self, addr: int, count: int) -> list[float]:
         """DSP parameter read. The device serves at most 14 floats per call."""

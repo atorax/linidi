@@ -24,9 +24,10 @@ import threading
 from typing import Any
 
 import minidsp_protocol as mp
-from minidsp_core import (PRODUCT_NAMES, AddressMap, as_biquad,
-                          describe_crossover_group, describe_peq_band,
-                          delay_ms_from_raw, product_name)
+from minidsp_core import (XOVER_SLOTS, AddressMap, as_biquad,
+                          delay_ms_from_raw,
+                          describe_crossover_group,
+                          describe_peq_band)
 
 # (hw_id, dsp_version) -> address map name.
 #
@@ -155,7 +156,7 @@ class NativeDevice:
                 out["invert"] = bool(self._dev.read_ints(spec["invert"], 1)[0])
             peq_addrs = spec.get("peq", [])
             peq_blocks = {a: self._dev.read_floats(a, 5) for a in peq_addrs}
-            xo_blocks = {a: self._floats(a, 20)
+            xo_blocks = {a: self._floats(a, XOVER_SLOTS * 5)
                          for a in spec.get("xover_groups", [])}
 
         out["peq"] = [describe_peq_band(as_biquad(peq_blocks[a]), i, self.rate)
@@ -163,7 +164,7 @@ class NativeDevice:
         out["crossover"] = [
             describe_crossover_group(
                 [as_biquad(xo_blocks[a][k * 5:(k + 1) * 5])
-                 for k in range(4)], gi, self.rate)
+                 for k in range(XOVER_SLOTS)], gi, self.rate)
             for gi, a in enumerate(spec.get("xover_groups", []))
         ]
         return out
@@ -238,10 +239,9 @@ class NativeDevice:
 
                 peq_addrs = spec.get("peq", [])
                 for band in out.get("peq", []):
-                    addrs = peq_addrs
-                    if band["index"] >= len(addrs):
+                    if band["index"] >= len(peq_addrs):
                         continue
-                    addr = addrs[band["index"]]
+                    addr = peq_addrs[band["index"]]
                     self._dev.write_biquad(addr, _coeff_list(band["coeff"]))
                     if band.get("bypass") is not None:
                         self._dev.set_bypass(addr, bool(band["bypass"]))
@@ -251,7 +251,8 @@ class NativeDevice:
                     if group["index"] >= len(bases):
                         continue
                     base = bases[group["index"]]
-                    for k, bq in enumerate(group.get("coeff", [])[:4]):
+                    coeffs = group.get("coeff", [])[:XOVER_SLOTS]
+                    for k, bq in enumerate(coeffs):
                         self._dev.write_biquad(base + k * 5, _coeff_list(bq))
                     if group.get("bypass") is not None:
                         self._dev.set_bypass(base, bool(group["bypass"]))
@@ -264,10 +265,9 @@ class NativeDevice:
                     self._dev.write_int(spec["enable"], _gate(inp["mute"]))
                 peq_addrs = spec.get("peq", [])
                 for band in inp.get("peq", []):
-                    addrs = peq_addrs
-                    if band["index"] >= len(addrs):
+                    if band["index"] >= len(peq_addrs):
                         continue
-                    addr = addrs[band["index"]]
+                    addr = peq_addrs[band["index"]]
                     self._dev.write_biquad(addr, _coeff_list(band["coeff"]))
                     if band.get("bypass") is not None:
                         self._dev.set_bypass(addr, bool(band["bypass"]))

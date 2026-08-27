@@ -45,6 +45,11 @@ ADDRESS_MAPS = HERE / "address_maps"
 
 BYPASS = {"b0": 1.0, "b1": 0.0, "b2": 0.0, "a1": 0.0, "a2": 0.0}
 
+# Biquad slots in one crossover group. A property of the device format, so it
+# is stated once rather than appearing as a 4 in every place that walks a
+# group.
+XOVER_SLOTS = 4
+
 PEQ_TYPES = ("peaking", "lowshelf", "highshelf", "lowpass", "highpass",
              "notch", "allpass", "bandpass")
 
@@ -146,7 +151,8 @@ def butterworth_qs(order: int) -> tuple[list[float], bool]:
 
 def design_crossover(mode: str, alignment: str, order: int, freq: float,
                      rate: int,
-                     max_biquads: int = 4) -> list[dict[str, float]]:
+                     max_biquads: int = XOVER_SLOTS,
+                     ) -> list[dict[str, float]]:
     """Crossover as a biquad cascade.
 
     Linkwitz-Riley order N is two cascaded Butterworths of order N/2, which is
@@ -887,7 +893,7 @@ def peq_biquad(band: dict[str, Any], rate: int) -> dict[str, float]:
 
 
 def crossover_biquads(group: dict[str, Any], rate: int,
-                      slots: int = 4) -> list[dict[str, float]]:
+                      slots: int = XOVER_SLOTS) -> list[dict[str, float]]:
     """What a crossover group contributes to the response as things stand.
 
     A group that is switched off contributes nothing. Padded to `slots` with
@@ -938,7 +944,7 @@ def peq_coeff(band: dict[str, Any], rate: int) -> dict[str, float]:
 
 
 def crossover_coeffs(group: dict[str, Any], rate: int,
-                     slots: int = 4) -> list[dict[str, float]]:
+                     slots: int = XOVER_SLOTS) -> list[dict[str, float]]:
     """All biquads of one crossover group, padded to `slots`.
 
     Each biquad carries its own `index`, numbered 0..slots-1 *within the
