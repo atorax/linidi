@@ -633,8 +633,18 @@ class MiniDSP:
         self.command(CMD_SET_DSP_FILTER_BIQUADS, payload)
 
     def set_bypass(self, addr: int, bypassed: bool) -> None:
-        """Bypass a filter: the flag rides in the mode byte, not the
-        payload."""
+        """Bypass one filter: the flag rides in the mode byte, not the payload.
+
+        The payload is the flag, the address, and a trailing zero -- byte for
+        byte what Device Console sends for a single filter.
+
+        The same opcode also takes a list of addresses, all switched the same
+        way, which would collapse the hundred-odd bypass writes an Apply makes
+        into two. That is not used here on purpose: bypass is what puts a
+        filter into circuit on an active crossover, this form is the one
+        verified against the hardware, and the saving is a fraction of a
+        second on an operation the user has already decided to make.
+        """
         payload = (bytes([0x80 if bypassed else 0x00]) + addr_bytes(addr)
                    + struct.pack(">H", 0))
         self.command(CMD_BYPASS_DSP_FILTER, payload)

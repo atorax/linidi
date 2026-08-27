@@ -227,7 +227,9 @@ Things that cost real debugging time:
   back moves it further down, about 0.17 dB a time, without converging.
 - **Bypass is a separate opcode** (`0x19`) stored apart from the coefficients,
   so a bypassed filter keeps its old coefficients. Reading coefficients alone
-  cannot tell you what is actually in circuit.
+  cannot tell you what is actually in circuit. The opcode takes either one
+  address or a list of them, all switched the same way; this app sends them
+  one at a time, which is the form verified against the hardware.
 - **A filter address is the base of a 5-float biquad block, and the device
   aligns reads down to one.** Asking for `base+14` returns the block starting
   at `base+10`. Reading a 20-float crossover group in chunks of the device's
