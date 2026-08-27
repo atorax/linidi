@@ -49,13 +49,23 @@ PEQ_TYPES = ("peaking", "lowshelf", "highshelf", "lowpass", "highpass",
 
 ALIGNMENTS = ("linkwitz-riley", "butterworth", "bessel")
 
-# Q values of the 2nd-order sections, used both to design and to identify.
-BESSEL_Q = {
-    2: [0.5773],
-    4: [0.5219, 0.8055],
-    6: [0.5103, 0.6112, 1.0234],
-    8: [0.5060, 0.5596, 0.7109, 1.2258],
+# Bessel sections as (Q, frequency ratio), normalised so the cascade is -3 dB
+# at the corner. Unlike Butterworth and Linkwitz-Riley, whose sections all sit
+# at the same frequency, a Bessel's sections are spread: keeping only the Q
+# values and designing every section at the corner produced a filter that was
+# -4.8 dB at its corner for order 2 and -12.2 dB for order 8, worsening with
+# order, and was not a Bessel response at all.
+BESSEL_SECTIONS: dict[int, list[tuple[float, float]]] = {
+    2: [(0.5773, 1.2723)],
+    4: [(0.5219, 1.4192), (0.8055, 1.5912)],
+    6: [(0.5103, 1.6060), (0.6112, 1.6913), (1.0234, 1.9071)],
+    8: [(0.5060, 1.7837), (0.5596, 1.8376),
+        (0.7109, 1.9591), (1.2258, 2.1953)],
 }
+
+# Q values alone, which is what identification matches on.
+BESSEL_Q = {order: [q for q, _ in secs]
+            for order, secs in BESSEL_SECTIONS.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -159,10 +169,11 @@ def design_crossover(mode: str, alignment: str, order: int, freq: float,
         if first:
             out.append(_first_order(mode, freq, rate))
     elif alignment == "bessel":
-        if order not in BESSEL_Q:
+        if order not in BESSEL_SECTIONS:
             raise ValueError("bessel supports even orders 2-8")
-        out += [design_biquad(mode, freq, q, 0.0, rate)
-                for q in BESSEL_Q[order]]
+        out += [design_biquad(mode, bessel_section_freq(freq, ratio, mode),
+                              q, 0.0, rate)
+                for q, ratio in BESSEL_SECTIONS[order]]
     else:
         raise ValueError(f"unknown alignment: {alignment}")
 
@@ -171,6 +182,15 @@ def design_crossover(mode: str, alignment: str, order: int, freq: float,
             f"{alignment} order {order} needs {len(out)} biquads but only "
             f"{max_biquads} slots exist per crossover group")
     return out
+
+
+def bessel_section_freq(corner: float, ratio: float, mode: str) -> float:
+    """Where one Bessel section sits, relative to the cascade's corner.
+
+    The low-pass prototype places each section above the corner by its ratio;
+    the high-pass transformation inverts that, so the sections sit below it.
+    """
+    return corner / ratio if mode == "highpass" else corner * ratio
 
 
 def response_db(biquads: Iterable[dict[str, float]], freqs: Iterable[float],
@@ -588,12 +608,38 @@ def describe_crossover_group(bqs: list[dict[str, float]], index: int,
                              "active": bool(sections)}
     if sections:
         alignment, order = identify_alignment(sections)
-        entry["mode"] = max(set(shapes), key=shapes.count)
+        mode = max(set(shapes), key=shapes.count)
+        entry["mode"] = mode
         entry["alignment"] = alignment
         entry["order"] = order
-        entry["freq"] = round(sum(f for f, _ in sections) / len(sections), 1)
+        entry["freq"] = round(crossover_corner(sections, alignment, order,
+                                               mode), 1)
         entry["qs"] = [None if q is None else round(q, 4) for _, q in sections]
     return entry
+
+
+def crossover_corner(sections: list[tuple[float, float]], alignment: str,
+                     order: int, mode: str) -> float:
+    """The corner a set of sections was designed around.
+
+    For Butterworth and Linkwitz-Riley every section sits at the corner, so
+    the average is the corner. A Bessel's sections are spread by a fixed ratio
+    each, so averaging them lands well above it -- an order 4 designed at
+    1000 Hz averages 1505 -- and reading a crossover back would have moved it.
+    Each section is put back where it came from first.
+    """
+    ratios = BESSEL_SECTIONS.get(order) if alignment == "bessel" else None
+    if not ratios:
+        return sum(f for f, _ in sections) / len(sections)
+
+    corners = []
+    for f0, q in sections:
+        if q is None:
+            continue
+        # Pair each section with the ratio belonging to its Q.
+        _, ratio = min(ratios, key=lambda rq: abs(rq[0] - q))
+        corners.append(f0 * ratio if mode == "highpass" else f0 / ratio)
+    return sum(corners) / len(corners) if corners else sections[0][0]
 
 
 # ---------------------------------------------------------------------------
