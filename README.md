@@ -150,12 +150,25 @@ What the hardware will and will not tell you shapes the whole design:
 | crossover and PEQ coefficients | crossover only | yes |
 | **whether a filter is bypassed** | **no** | yes |
 | routing (mixer) | no | yes |
-| master volume, source, preset, meters | yes | yes |
+| master volume, source, preset | yes | yes |
+| level meters | where the device has them | n/a |
 
 Bypass has no readable address at all, so a filter sitting on the device fully
 configured but switched off reads back looking exactly like a live one. That
 is why importing a Device Console export matters, and why the app refuses to
 guess -- see [On bypass](#on-bypass).
+
+Routing is the same story for a different reason. The mixer cells *do* have
+addresses, and writing to them works, but reading them back returns a constant
+1 on every cell regardless of what is actually passing -- measured on a Flex 8
+with audio flowing through four outputs and all sixteen cells reading "off".
+They are writable and not readable, so routing also comes from the config
+file.
+
+Three of the generated maps have no meter addresses at all, so those devices
+report no levels. The channel counts come from the address map rather than
+from how many levels arrive, which is the honest source for the question
+"how many outputs does this have".
 
 ### Address maps
 
@@ -190,7 +203,18 @@ Things that cost real debugging time:
   Any write of a gain has to be verified and corrected in a loop.
 - **Delay is a sample count stored in the float's bit pattern**, not a float.
 - **Channel mute and mixer cells use 1 = off, 2 = on**, not 0/1. A plain zero
-  means something else at those addresses.
+  means something else at those addresses. A channel's own mute gate reads
+  back correctly; a mixer cell's does not, and returns 1 whatever the state.
+- **A routing cell's gate address is not `input * outputs + output`.** That
+  arithmetic happens to be right on a Flex 8 and is wrong on most of the
+  range: five of the thirteen device profiles put the gates elsewhere, three
+  have none, and on a 2x4HD the addresses that formula produces are the
+  channel mute gates. Take them from the device profile.
+- **Bessel sections are not all at the corner frequency.** Each has its own
+  ratio, and designing them all at the corner gives a cascade that is -4.8 dB
+  at its own corner at 2nd order and -12.2 dB at 8th.
+- **Gain writes are not idempotent.** Reading a gain and writing it straight
+  back moves it further down, about 0.17 dB a time, without converging.
 - **Bypass is a separate opcode** (`0x19`) stored apart from the coefficients,
   so a bypassed filter keeps its old coefficients. Reading coefficients alone
   cannot tell you what is actually in circuit.
