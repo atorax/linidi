@@ -195,6 +195,21 @@ QPushButton#tab:checked {{ color: {ACTIVE}; border-bottom-color: {ACTIVE};
 # Icons
 # --------------------------------------------------------------------------
 
+def default_project_path() -> Path:
+    """Where the working project lives.
+
+    Under the program's own name, but the previous name is honoured if a
+    project is already there and the new location is empty. Renaming the
+    program should not hide someone's tuning behind a path they never chose
+    and would have no reason to look for.
+    """
+    current = Path.home() / ".config" / "linidi" / "project.json"
+    previous = Path.home() / ".config" / "minidsp-gui" / "project.json"
+    if not current.exists() and previous.is_file():
+        return previous
+    return current
+
+
 def bundle_dir() -> Path:
     """The root of the source tree, or of a frozen build's unpacked files."""
     base = getattr(sys, "_MEIPASS", None)
@@ -277,6 +292,28 @@ def logo_pixmap(height: int = 26) -> QPixmap:
     if pm.isNull():
         return QPixmap()
     return pm.scaledToHeight(height, Qt.SmoothTransformation)
+
+
+def app_icon() -> QIcon:
+    """The program icon, at the sizes a window manager asks for.
+
+    Qt will scale a single pixmap, but it does it once per request and with no
+    say in how; adding the sizes explicitly keeps the monogram crisp in a
+    task bar and a title bar rather than leaving 16px to a generic downscale.
+    Returns an empty icon if the artwork is missing, which Qt treats as "no
+    icon set" rather than drawing a blank.
+    """
+    path = asset_dir() / "LDicon.png"
+    if not path.is_file():
+        return QIcon()
+    source = QPixmap(str(path))
+    if source.isNull():
+        return QIcon()
+    icon = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        icon.addPixmap(source.scaled(size, size, Qt.KeepAspectRatio,
+                                     Qt.SmoothTransformation))
+    return icon
 
 
 def speaker_icon(size: int = 22, muted: bool = False,
@@ -2230,6 +2267,7 @@ class MainWindow(QMainWindow):
         self._last_config = None
 
         self.setWindowTitle("LiniDi")
+        self.setWindowIcon(app_icon())
         self.resize(1560, 1044)
 
         central = QWidget()
@@ -2996,13 +3034,16 @@ def main() -> int:
                     help="fallback DSP rate if no address map is available")
     ap.add_argument("--peq", type=int, default=10,
                     help="fallback PEQ band count")
-    ap.add_argument("--project",
-                    default=str(Path.home() / ".config" / "minidsp-gui"
-                                / "project.json"))
+    ap.add_argument("--project", default=str(default_project_path()),
+                    help="working project file")
     opts = ap.parse_args()
 
     app = QApplication(sys.argv)
-    app.setApplicationName("minidsp-gui")
+    app.setApplicationName("LiniDi")
+    app.setApplicationDisplayName("LiniDi")
+    # Set on the application as well as the window: some window managers take
+    # the task-bar entry's icon from here rather than from the window.
+    app.setWindowIcon(app_icon())
     app.setStyleSheet(STYLE)
     win = MainWindow(opts)
     win.show()
