@@ -1400,7 +1400,8 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
         achieved = put(request)
         writes += 1
         error = achieved - target_db
-        if best_achieved is None or abs(error) < abs(best_achieved - target_db):
+        if (best_achieved is None
+                or abs(error) < abs(best_achieved - target_db)):
             best_request, best_achieved = request, achieved
         if abs(error) <= tol:
             return achieved, writes

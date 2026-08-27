@@ -2397,7 +2397,8 @@ class MainWindow(QMainWindow):
     def load_project(self, n_in, n_out, n_peq, rate):
         if self.project_path.is_file():
             try:
-                data = json.loads(self.project_path.read_text())
+                data = json.loads(
+                    self.project_path.read_text(encoding="utf-8"))
                 if (len(data.get("outputs", [])) == n_out
                         and len(data.get("inputs", [])) == n_in):
                     return data
@@ -2887,7 +2888,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            data = json.loads(Path(path).read_text())
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             QMessageBox.warning(self, "Load failed", str(exc))
             return
@@ -2907,7 +2908,9 @@ class MainWindow(QMainWindow):
     def save_project(self):
         try:
             self.project_path.parent.mkdir(parents=True, exist_ok=True)
-            self.project_path.write_text(json.dumps(self.project, indent=2))
+            self.project_path.write_text(
+                json.dumps(self.project, indent=2) + "\n",
+                encoding="utf-8")
         except OSError as exc:
             self.statusBar().showMessage(f"Could not save: {exc}", 6000)
 
