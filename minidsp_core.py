@@ -43,6 +43,12 @@ import requests
 HERE = Path(__file__).resolve().parent
 ADDRESS_MAPS = HERE / "address_maps"
 
+# The five coefficients, in the order they go on the wire and are written
+# everywhere else. Stated once so that dicts built in different places
+# serialise identically -- a saved project should not differ between two runs
+# because one of them happened to iterate a set.
+COEFF_KEYS = ("b0", "b1", "b2", "a1", "a2")
+
 BYPASS = {"b0": 1.0, "b1": 0.0, "b2": 0.0, "a1": 0.0, "a2": 0.0}
 
 # Biquad slots in one crossover group. A property of the device format, so it
@@ -436,7 +442,6 @@ def identify_alignment(sections: list[tuple[float, float]]) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 
 _REW_COEF = re.compile(r"^\s*([ab][012])\s*=\s*(-?[\d.eE+-]+)\s*,?\s*$")
-REW_KEYS = frozenset(("b0", "b1", "b2", "a1", "a2"))
 
 
 def parse_rew_biquads(text: str) -> list[dict[str, float]]:
@@ -452,8 +457,8 @@ def parse_rew_biquads(text: str) -> list[dict[str, float]]:
         # Some exports carry an explicit a0=1 line. Requiring exactly five
         # entries silently dropped every one of those biquads; require the
         # five that matter and ignore anything else on the way past.
-        if REW_KEYS <= cur.keys():
-            out.append({k: cur[k] for k in REW_KEYS})
+        if all(k in cur for k in COEFF_KEYS):
+            out.append({k: cur[k] for k in COEFF_KEYS})
 
     for line in text.splitlines():
         if line.strip().lower().startswith("biquad"):
@@ -576,10 +581,9 @@ def delay_ms_from_raw(raw: float, rate: int) -> float:
 
 def as_biquad(vals: list[float]) -> dict[str, float]:
     """Five consecutive floats as a section, or a passthrough if short."""
-    if len(vals) < 5:
+    if len(vals) < len(COEFF_KEYS):
         return dict(BYPASS)
-    b0, b1, b2, a1, a2 = vals[:5]
-    return {"b0": b0, "b1": b1, "b2": b2, "a1": a1, "a2": a2}
+    return dict(zip(COEFF_KEYS, vals))
 
 
 def describe_peq_band(bq: dict[str, float], slot: int,
@@ -671,12 +675,16 @@ class Daemon:
     timeout: float = 5.0
     _local: Any = None
 
+    def __post_init__(self) -> None:
+        # Built here rather than lazily in session(): two threads arriving at
+        # once would each have seen it missing and made their own, and one of
+        # the two would then have been discarded along with its connections.
+        self._local = threading.local()
+
     def session(self) -> requests.Session:
         # requests.Session is not thread-safe, and this object is shared by
         # the meter poller thread and background task threads, so each gets
         # its own session rather than sharing one connection pool.
-        if self._local is None:
-            self._local = threading.local()
         sess = getattr(self._local, "session", None)
         if sess is None:
             sess = requests.Session()
@@ -692,14 +700,15 @@ class Daemon:
             r.raise_for_status()
             return r.json()
         except requests.RequestException as exc:
-            raise DeviceError(f"minidspd unreachable at {self.base}: {exc}")
+            raise DeviceError(
+                f"minidspd unreachable at {self.base}: {exc}") from exc
 
     def _post(self, url: str, payload: dict):
         try:
             r = self.session().post(url, json=payload, timeout=self.timeout)
             r.raise_for_status()
         except requests.RequestException as exc:
-            raise DeviceError(f"write failed: {exc}")
+            raise DeviceError(f"write failed: {exc}") from exc
 
     def devices(self) -> list[dict]:
         return self._get(f"{self.base.rstrip('/')}/devices")
@@ -743,9 +752,9 @@ class Readback:
                  f"{start:X}", f"{end:X}"],
                 capture_output=True, text=True, timeout=self.timeout)
         except FileNotFoundError:
-            raise DeviceError(f"'{self.cli}' not found on PATH")
+            raise DeviceError(f"'{self.cli}' not found on PATH") from None
         except subprocess.TimeoutExpired:
-            raise DeviceError("device read timed out")
+            raise DeviceError("device read timed out") from None
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip().splitlines()
             raise DeviceError(f"read failed: {err[-1] if err else '?'}")
@@ -1477,13 +1486,25 @@ def unstable_filters(project: dict[str, Any]) -> list[str]:
     bad = []
     for kind in ("inputs", "outputs"):
         for ch in project.get(kind, []):
+            name = ch.get("name", kind)
             for i, band in enumerate(ch.get("peq", [])):
                 if not band.get("enabled"):
                     continue
                 bq = band.get("manual")
                 if bq and not biquad_is_stable(bq):
-                    name = ch.get('name', kind)
                     bad.append(f"{name} band {band.get('index', i)}")
+            # Crossover groups can hold manual coefficients too -- anything
+            # read off the device that did not match a standard alignment is
+            # kept verbatim -- and those were not being checked at all, so an
+            # unstable one would have gone to a driver unchallenged.
+            for i, group in enumerate(ch.get("crossover", [])):
+                if not group.get("enabled"):
+                    continue
+                for k, bq in enumerate(group.get("manual") or []):
+                    if not biquad_is_stable(bq):
+                        bad.append(
+                            f"{name} crossover {group.get('index', i) + 1} "
+                            f"section {k + 1}")
     return bad
 
 

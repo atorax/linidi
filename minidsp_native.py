@@ -24,7 +24,8 @@ import threading
 from typing import Any
 
 import minidsp_protocol as mp
-from minidsp_core import (XOVER_SLOTS, AddressMap, as_biquad,
+from minidsp_core import (COEFF_KEYS, MAX_DELAY_SAMPLES,
+                          XOVER_SLOTS, AddressMap, as_biquad,
                           delay_ms_from_raw,
                           describe_crossover_group,
                           describe_peq_band)
@@ -283,6 +284,7 @@ class NativeDevice:
         Checking first means the write either happens completely or not at
         all.
         """
+        n_out = len(self.amap.outputs)
         for key, specs in (("outputs", self.amap.outputs),
                            ("inputs", self.amap.inputs)):
             for ch in payload.get(key, []):
@@ -292,6 +294,12 @@ class NativeDevice:
                         f"payload names {key[:-1]} {idx}, but this device has "
                         f"{len(specs)}. The project was probably saved "
                         f"against a different model.")
+                for route in ch.get("routing", []):
+                    dest = route.get("index")
+                    if not isinstance(dest, int) or not 0 <= dest < n_out:
+                        raise mp.ProtocolError(
+                            f"routing on input {idx} names output {dest}, but "
+                            f"this device has {n_out}.")
 
     def _set_route(self, in_idx: int, route: dict[str, Any]) -> None:
         """Mixer cell, which uses the same 1-off / 2-on gate as a channel."""
@@ -335,7 +343,19 @@ def _set_gate(out: dict[str, Any], raw: int) -> None:
 
 
 def _coeff_list(coeff: dict[str, float]) -> list[float]:
-    return [float(coeff.get(k, 0.0)) for k in ("b0", "b1", "b2", "a1", "a2")]
+    """The five coefficients, in wire order, or an error.
+
+    A missing key used to default to 0.0, and a section with b0 = 0 is not a
+    gentle default: it passes nothing, so a malformed filter would have been
+    written as silence on a driver. Every path that builds these produces all
+    five, so an absent one is a bug worth hearing about.
+    """
+    missing = [k for k in COEFF_KEYS if k not in coeff]
+    if missing:
+        raise mp.ProtocolError(
+            f"biquad is missing {', '.join(missing)}; refusing to write a "
+            f"partial filter")
+    return [float(coeff[k]) for k in COEFF_KEYS]
 
 
 def _delay_samples(value: Any, rate: int) -> int:
@@ -349,4 +369,8 @@ def _delay_samples(value: Any, rate: int) -> int:
         ms = value.get("secs", 0) * 1000.0 + value.get("nanos", 0) / 1e6
     else:
         ms = float(value)
-    return max(0, int(round(ms * rate / 1000.0)))
+    samples = int(round(ms * rate / 1000.0))
+    # Bounded on the way out as well as on the way in: no miniDSP offers
+    # anything near this much delay, and writing a sample count past what the
+    # buffer holds is not a defined thing to do.
+    return max(0, min(samples, MAX_DELAY_SAMPLES))
