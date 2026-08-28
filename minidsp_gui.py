@@ -58,6 +58,11 @@ MUTED   = "#8b93a3"
 ACTIVE  = "#f0883e"
 ACCENT  = "#4f9cf9"
 OK      = "#3fb950"
+# Phase gets a colour of its own. It shares the plot with magnitude curves in
+# orange and blue and with ten PEQ discs, and reusing any of those made a
+# dotted trace look like a variant of whatever it borrowed from. Teal belongs
+# to nothing else here, so the colour carries the meaning by itself.
+PHASE   = "#2dd4bf"
 WARN    = "#d29922"
 DANGER  = "#f0533f"
 
@@ -1932,6 +1937,7 @@ class ChannelEditor(QWidget):
         self.invert.toggled.connect(self._emit)
 
         self.show_phase = QCheckBox("Phase")
+        self.show_phase.setStyleSheet(f"color: {PHASE};")
         self.show_phase.setToolTip(
             "Overlay phase on the response, against a right-hand scale.\n"
             "On an output this also draws whatever it crosses over with, so "
@@ -2382,8 +2388,12 @@ class ChannelEditor(QWidget):
 
     def _phase_curves(self, freqs, rate: int) -> list[dict[str, Any]]:
         out = []
-        for chan, colour in [(self.chan, ACTIVE)] + [
-                (p, ACCENT) for p in self._crossover_partners()]:
+        # This channel's phase in teal; whatever it crosses over with in
+        # grey. The comparison is between one trace and its context, and
+        # giving the context its own bright colour made two equals out of
+        # what is really a subject and a backdrop.
+        for chan, colour in [(self.chan, PHASE)] + [
+                (p, MUTED) for p in self._crossover_partners()]:
             bqs = self._chain_biquads(chan, rate)
             out.append({
                 "degs": core.response_phase(
