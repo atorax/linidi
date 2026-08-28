@@ -2626,6 +2626,12 @@ class MainWindow(QMainWindow):
         # The last read's comparison of running against stored: what was
         # compared, what could not be, and what differed. None before a read.
         self._live_vs_stored = None
+        # Which preset the project on screen came from, and which one the
+        # device is actually running. Changing preset switches the device and
+        # leaves the project showing the old one, so without these two the
+        # app can display preset 1 while preset 3 is playing and say nothing.
+        self._project_preset: int | None = None
+        self._active_preset: int | None = None
         # Last folder used per kind of file dialog.
         self._dirs: dict[str, Path] = {}
         # True while a write is in flight. Both writes share the one command
@@ -3128,26 +3134,49 @@ class MainWindow(QMainWindow):
     def update_warning(self):
         unknown = core.unknown_bypass(self.project) if self.project else []
         self._update_leds()
+        # Ahead of everything else: if the screen is showing one preset and
+        # the device is running another, nothing else on the strip means what
+        # it appears to mean.
+        if (self._project_preset is not None
+                and self._active_preset is not None
+                and self._project_preset != self._active_preset):
+            self.warn_label.setText(
+                f"Showing preset {self._project_preset + 1}, device is on "
+                f"preset {self._active_preset + 1} - read to catch up")
+            self.warn_label.setStyleSheet(f"color: {DANGER};")
+            self._enable_writes(False)
+            return
+        # Which preset this is leads every other message on the strip. It is
+        # the thing that decides what all of it means, and it was previously
+        # nowhere on screen except a combo box that shows the device's preset
+        # rather than the one being displayed.
+        if self._project_preset is not None:
+            where = f"Preset {self._project_preset + 1}"
+        elif self._active_preset is not None:
+            where = f"Preset {self._active_preset + 1} (imported, not read)"
+        else:
+            where = "No preset read"
         if unknown:
             self.warn_label.setText(
-                f"{len(unknown)} filter state(s) unknown - read from device "
-                "to enable writing")
+                f"{where}  -  {len(unknown)} filter state(s) unknown, "
+                "read from device to enable writing")
             self.warn_label.setStyleSheet(f"color: {DANGER};")
             self._enable_writes(False)
             return
         self._enable_writes(not self._writing)
         if not self.have_read:
             self.warn_label.setText(
-                "Not yet read from device - writing would overwrite it")
+                f"{where}  -  not yet read from device, writing would "
+                f"overwrite it")
             self.warn_label.setStyleSheet(f"color: {WARN};")
         elif self.dirty:
-            self.warn_label.setText("Edits not applied")
+            self.warn_label.setText(f"{where}  -  edits not applied")
             self.warn_label.setStyleSheet(f"color: {ACCENT};")
         elif not self.stored_current:
-            self.warn_label.setText("Applied, not stored")
+            self.warn_label.setText(f"{where}  -  applied, not stored")
             self.warn_label.setStyleSheet(f"color: {ACTIVE};")
         else:
-            self.warn_label.setText("In sync")
+            self.warn_label.setText(f"{where}  -  in sync")
             self.warn_label.setStyleSheet(f"color: {MUTED};")
 
     def tick(self):
@@ -3160,6 +3189,13 @@ class MainWindow(QMainWindow):
             # produces whenever it is busy. Not worth a dialog.
             return
         self.master.update_status(status)
+        was = self._active_preset
+        try:
+            self._active_preset = int(status["master"]["preset"])
+        except (KeyError, TypeError, ValueError):
+            self._active_preset = None
+        if was != self._active_preset:
+            self.update_warning()
         if self.meter_poll.isActive():
             return
         for m, v in zip(self.in_meters, status.get("input_levels", [])):
@@ -3191,8 +3227,23 @@ class MainWindow(QMainWindow):
             m.animate()
 
     def on_master_change(self, payload):
+        """Volume, mute, source or preset, straight to the device.
+
+        A preset change is followed by a read. Switching preset used to move
+        the device and leave the screen showing the preset before it, with
+        nothing to say so -- and since a stock preset is flat with no
+        crossovers, that reads exactly like a device that has lost its
+        configuration. The display now follows the device.
+        """
+        switching = "preset" in payload
+
+        def done(_):
+            if switching:
+                self.on_read()
+
         self.tasks.run(
             lambda: self.daemon.set_master(**payload),
+            on_done=done,
             on_error=lambda e: self.statusBar().showMessage(e, 6000))
 
     def on_help(self):
@@ -3227,6 +3278,7 @@ class MainWindow(QMainWindow):
             preset = int(self.daemon.status()["master"].get("preset", 0))
         except Exception:                                  # noqa: BLE001
             pass
+        self._reading_preset = preset
 
         # Only the direct-USB path can reach flash; over the daemon there is
         # no way to issue a raw flash read.
@@ -3278,6 +3330,7 @@ class MainWindow(QMainWindow):
                 f"could not read the stored preset: {stored_error}", 8000)
         self.have_read = True
         self.dirty = False
+        self._project_preset = getattr(self, "_reading_preset", None)
         self.read_btn.setEnabled(True)
         self.refresh_list()
         self.on_select(self.chan_list.currentRow())
@@ -3624,6 +3677,11 @@ class MainWindow(QMainWindow):
                 return
 
         stats = core.apply_device_console_xml(self.project, parsed, self.amap)
+        # Imported from a file, so the project is nobody's preset now. Saying
+        # it came from the one that happens to be active would be a lie, and
+        # it is exactly the lie that makes a stock export look like a
+        # cleared-out device.
+        self._project_preset = None
         self.have_read = True
         self.dirty = True
         self.refresh_list()
