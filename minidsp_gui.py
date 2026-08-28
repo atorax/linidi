@@ -569,8 +569,14 @@ class MeterBar(QWidget):
         p.setPen(QColor(MUTED))
         p.setFont(QFont("monospace", 8))
         p.drawText(0, 0, 22, h, Qt.AlignVCenter | Qt.AlignLeft, self.label)
+        # The number is the held peak, not the newest sample. A sample
+        # arrives every 60 ms, and a figure changing sixteen times a second
+        # cannot be read -- it is only good for seeing that something is
+        # moving, which the bar already shows better. Held for PEAK_HOLD_SEC,
+        # it is a number you can actually take down, and it is the same value
+        # as the peak tick on the bar.
         p.drawText(w - 42, 0, 42, h, Qt.AlignVCenter | Qt.AlignRight,
-                   "-inf" if self.value <= -119 else f"{self.value:.1f}")
+                   "-inf" if self.peak <= -119 else f"{self.peak:.1f}")
 
         x0, x1 = 24, w - 46
         bar_w = max(1, x1 - x0)
@@ -581,8 +587,13 @@ class MeterBar(QWidget):
 
         fill = int(bar_w * frac(self.display))
         if fill > 0:
-            col = (DANGER if self.value > -3
-                   else WARN if self.value > -12 else OK)
+            # Coloured by the held peak, like the number. Following the
+            # newest sample instead meant a transient into the red showed for
+            # a single frame and was gone before it could be seen; held, it
+            # stays lit long enough to notice, which is the point of marking
+            # it at all.
+            col = (DANGER if self.peak > -3
+                   else WARN if self.peak > -12 else OK)
             p.fillRect(x0, 4, fill, h - 8, QColor(col))
         if self.peak > -119:
             px = x0 + int(bar_w * frac(self.peak))
