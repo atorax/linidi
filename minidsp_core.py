@@ -1314,8 +1314,51 @@ def _apply_stored_bands(dst_bands: list[dict[str, Any]],
             dst["manual"] = None
 
 
-def apply_stored_preset(project: dict[str, Any],
-                        cfg: dict[str, Any]) -> dict[str, int]:
+def live_matches_stored(readings: list[dict[str, Any]],
+                        inputs: list[dict[str, Any]],
+                        cfg: dict[str, Any]) -> bool | None:
+    """Whether the running parameters agree with the stored preset.
+
+    Only the fields the hardware actually reports can be compared -- gain,
+    delay, polarity and the channel gates. Coefficients cannot, because they
+    do not read back, so a disagreement in a filter is invisible here and
+    this answers "no reason to think otherwise" rather than "identical".
+
+    That is still worth having: a device that has been applied to but not
+    saved shows up immediately, which is exactly the state that is otherwise
+    silent until the next power cycle. None means there was nothing to
+    compare.
+    """
+    stored_out = {c["index"]: c for c in cfg.get("outputs", [])}
+    stored_in = {c["index"]: c for c in cfg.get("inputs", [])}
+    compared = 0
+
+    def same(a: Any, b: Any, tol: float) -> bool:
+        if isinstance(a, bool) or isinstance(b, bool):
+            return bool(a) == bool(b)
+        try:
+            return abs(float(a) - float(b)) <= tol
+        except (TypeError, ValueError):
+            return a == b
+
+    for live, stored, fields in (
+            (readings, stored_out,
+             (("gain", 0.02), ("delay", 0.002), ("mute", 0), ("invert", 0))),
+            (inputs, stored_in, (("gain", 0.02), ("mute", 0)))):
+        for r in live:
+            s = stored.get(r.get("index"))
+            if not s:
+                continue
+            for key, tol in fields:
+                if key in r and key in s:
+                    compared += 1
+                    if not same(r[key], s[key], tol):
+                        return False
+    return None if not compared else True
+
+
+def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
+                        readable: bool = False) -> dict[str, int]:
     """Fold a preset read out of the device's flash into a project.
 
     The counterpart of apply_device_console_xml for data that came from the
@@ -1327,6 +1370,12 @@ def apply_stored_preset(project: dict[str, Any],
     gates. What it is not is a reading of what the DSP is running this
     instant -- it is what the device loads at power-on, which is the same
     thing unless something has been written live since.
+
+    Which is why gain, delay, polarity and the channel gates are left alone
+    unless `readable` is set. Those the hardware does report, and a live read
+    is the better answer for them: it says what the device is doing now,
+    where this says what it would come back as. Taking the stored value would
+    hide exactly the disagreement worth seeing.
     """
     stats = {"outputs": 0, "inputs": 0, "crossover": 0, "peq": 0,
              "bypassed": 0, "routing": 0}
@@ -1337,9 +1386,10 @@ def apply_stored_preset(project: dict[str, Any],
             continue
         out = project["outputs"][idx]
         stats["outputs"] += 1
-        for key in ("gain", "delay", "mute", "invert"):
-            if key in src:
-                out[key] = src[key]
+        if readable:
+            for key in ("gain", "delay", "mute", "invert"):
+                if key in src:
+                    out[key] = src[key]
 
         for group in src.get("crossover", []):
             gi = group["index"]
@@ -1372,9 +1422,10 @@ def apply_stored_preset(project: dict[str, Any],
             continue
         inp = project["inputs"][idx]
         stats["inputs"] += 1
-        for key in ("gain", "mute"):
-            if key in src:
-                inp[key] = src[key]
+        if readable:
+            for key in ("gain", "mute"):
+                if key in src:
+                    inp[key] = src[key]
         routes = {r["index"]: r for r in src.get("routing", [])}
         for route in inp.get("routing", []):
             found = routes.get(route["index"])
