@@ -202,8 +202,24 @@ class NativeDevice:
                 _set_gate(out, self._dev.read_ints(spec["enable"], 1)[0])
             peq_addrs = spec.get("peq", [])
             blocks = {a: self._dev.read_floats(a, 5) for a in peq_addrs}
+            # A mixer cell's gain reads back; its on/off gate does not. The
+            # gate answers a constant 1 on every cell, which is the encoding
+            # for "off" -- on this device all 16 answer 1 while audio is
+            # passing through four outputs, and the stored preset holds a
+            # mixture of 1 and 2 at the same addresses. So the gain is read
+            # and the gate is left to the stored preset, which is the only
+            # place the real routing can be had.
+            #
+            # Worth stating because 1 is a plausible answer rather than an
+            # obviously absent one: taking it at face value would draw every
+            # output as unrouted, and writing it back would silence them.
+            route_gain = [round(self._dev.read_floats(a, 1)[0], 3)
+                          for a in spec.get("routing", [])]
         out["peq"] = [describe_peq_band(as_biquad(blocks[a]), i, self.rate)
                       for i, a in enumerate(peq_addrs)]
+        if route_gain:
+            out["routing"] = [{"index": i, "gain": g}
+                              for i, g in enumerate(route_gain)]
         return out
 
     # -- the stored preset -------------------------------------------------

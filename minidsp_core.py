@@ -1195,6 +1195,14 @@ def apply_readback(project: dict[str, Any],
             inp["gain"] = r["gain"]
         if "mute" in r:
             inp["mute"] = r["mute"]
+        # A mixer cell's gain reads back; its gate does not, and comes from
+        # the stored preset instead. Only what was actually read is folded
+        # in here.
+        found = {x["index"]: x for x in r.get("routing", [])}
+        for route in inp.get("routing", []):
+            live = found.get(route["index"])
+            if live and "gain" in live:
+                route["gain"] = live["gain"]
         _apply_peq_readback(inp["peq"], r.get("peq", []), rate)
 
     return project
@@ -1360,14 +1368,50 @@ def compare_live_stored(readings: list[dict[str, Any]],
             s = stored.get(r.get("index"))
             if not s:
                 continue
+            n = r["index"] + 1
             for key, tol in fields:
                 if key not in r or key not in s:
                     continue
                 out["compared"] += 1
                 if not same(r[key], s[key], tol):
                     out["differences"].append(
-                        f"{label} {r['index'] + 1} {key}: "
-                        f"running {show(r[key])}, stored {show(s[key])}")
+                        f"{label} {n} {key}: running {show(r[key])}, "
+                        f"stored {show(s[key])}")
+
+            # Mixer cells read back, so routing is comparable too.
+            sr = {x["index"]: x for x in s.get("routing", [])}
+            for cell in r.get("routing", []):
+                t = sr.get(cell["index"])
+                if not t:
+                    continue
+                # Gain only: the gate does not read back, so a live value
+                # for it would be a constant being compared with the truth.
+                if "gain" in cell and "gain" in t:
+                    out["compared"] += 1
+                    if not same(cell["gain"], t["gain"], 0.02):
+                        out["differences"].append(
+                            f"{label} {n} -> out {cell['index'] + 1} gain: "
+                            f"running {show(cell['gain'])}, "
+                            f"stored {show(t['gain'])}")
+
+            # So do crossover coefficients. Compared as coefficients rather
+            # than as a decoded corner, because two different designs can
+            # round to the same frequency and this is meant to catch a real
+            # difference in what the device is computing.
+            sx = {g["index"]: g for g in s.get("crossover", [])}
+            for grp in r.get("crossover", []):
+                t = sx.get(grp["index"])
+                if not t:
+                    continue
+                for k, (a, b) in enumerate(zip(grp.get("coeff", []),
+                                               t.get("coeff", []))):
+                    out["compared"] += 1
+                    if any(not same(a.get(c), b.get(c), 1e-6)
+                           for c in COEFF_KEYS):
+                        out["differences"].append(
+                            f"{label} {n} crossover {grp['index'] + 1} "
+                            f"section {k + 1}: coefficients differ")
+
             out["unreadable"] += len(s.get("peq", []))
     return out
 
@@ -1386,11 +1430,17 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
     instant -- it is what the device loads at power-on, which is the same
     thing unless something has been written live since.
 
-    Which is why gain, delay, polarity and the channel gates are left alone
-    unless `readable` is set. Those the hardware does report, and a live read
-    is the better answer for them: it says what the device is doing now,
-    where this says what it would come back as. Taking the stored value would
-    hide exactly the disagreement worth seeing.
+    Which is why most of it is applied only when `readable` is set. Measured
+    class by class against a Flex 8, gains, delays, mixer-cell gains and
+    every crossover block read back and match, so a live read is the better
+    answer for those: it says what the device is doing now, where this says
+    what it would come back as, and taking the stored value would hide
+    exactly the disagreement worth seeing.
+
+    Three things cannot be read at any price, and those are supplied
+    unconditionally: PEQ coefficients, which answer zero; mixer-cell gates,
+    which answer a constant 1 whatever the routing is; and the bypass flag
+    on every filter, which has no parameter address at all.
     """
     stats = {"outputs": 0, "inputs": 0, "crossover": 0, "peq": 0,
              "bypassed": 0, "routing": 0}
@@ -1412,22 +1462,27 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
                 break
             dst = out["crossover"][gi]
             stats["crossover"] += 1
+            # The coefficients read back, so the live pass has already put
+            # the right ones here. Only the bypass flag is taken from store,
+            # because it has no address to read.
             bypassed = group.get("bypass")
             if bypassed is not None:
                 dst["bypass_source"] = "device"
                 dst["enabled"] = not bypassed
                 if bypassed:
                     stats["bypassed"] += 1
-            dst["read_state"] = "stored"
-            if group.get("alignment") in ALIGNMENTS:
-                dst.update(mode=group["mode"], alignment=group["alignment"],
-                           order=group["order"], freq=group["freq"],
-                           manual=None)
-            elif group.get("active"):
-                dst["alignment"] = "custom"
-                dst["manual"] = group["coeff"]
-            else:
-                dst["manual"] = None
+            if readable:
+                dst["read_state"] = "stored"
+                if group.get("alignment") in ALIGNMENTS:
+                    dst.update(mode=group["mode"],
+                               alignment=group["alignment"],
+                               order=group["order"], freq=group["freq"],
+                               manual=None)
+                elif group.get("active"):
+                    dst["alignment"] = "custom"
+                    dst["manual"] = group["coeff"]
+                else:
+                    dst["manual"] = None
 
         _apply_stored_bands(out["peq"], src.get("peq", []), stats)
 
@@ -1441,6 +1496,9 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
             for key in ("gain", "mute"):
                 if key in src:
                     inp[key] = src[key]
+        # A cell's gate is one of the three things the hardware will not
+        # report, so it always comes from here. Its gain does read back, so
+        # that is left to the live pass unless there was not one.
         routes = {r["index"]: r for r in src.get("routing", [])}
         for route in inp.get("routing", []):
             found = routes.get(route["index"])
@@ -1449,7 +1507,7 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
             if "enabled" in found:
                 route["enabled"] = found["enabled"]
                 stats["routing"] += 1
-            if "gain" in found:
+            if readable and "gain" in found:
                 route["gain"] = found["gain"]
         _apply_stored_bands(inp["peq"], src.get("peq", []), stats)
 
