@@ -171,11 +171,23 @@ MAX_FLASH_BLOCK_CHUNK = 32
 # EEPROM addresses (byte-addressed space, reachable via CMD_READ_FLASH).
 # Every one of these matches the address Device Console reads for the same
 # thing, checked against its own source.
+#
+# "EEPROM" is a name, not a separate part. This window is the last 64 KiB of
+# the same flash the presets live in: read 0x0000..0xffff with CMD_READ_FLASH
+# and 0x3f0000..0x3fffff with CMD_READ_FLASH_FULL_ADDR and every one of the
+# 65536 bytes matches. Two commands, one region, differing only in how wide
+# an address they take.
 EE_DSP_ID = 0xFFA1            # Device Console calls this the DSP id
+EE_DEFAULT_CONFIG = 0xFFA3    # 9 bytes; byte 0 is the key below
+EE_VERIFY_KEY = 0xFFA3        # "DSP Program Verification Key"; vendor
+                              # rejects anything above 13. Reads 3 here.
+EE_MOD_TOKEN = 0xFFC8         # 4 bytes per preset, four presets
+EE_MOD_TOKEN_SIZE = 4
 EE_PRESET = 0xFFD8
 EE_SOURCE = 0xFFD9
 EE_MASTER_VOLUME = 0xFFDA
 EE_MUTE = 0xFFDB
+EE_MASTER_FIR_BYPASS = 0xFFE0
 EE_SERIAL32 = 0xFFFC          # u32 variant
 EE_SERIAL16 = 0xFFFE          # u16, big-endian; used by the Flex family
 

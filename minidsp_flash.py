@@ -4,12 +4,32 @@ minidsp_flash -- the stored preset, read back out of the device's flash.
 
 Why this exists
 ---------------
-Filter memory does not read back. Asking the device for a PEQ coefficient
-returns zero, whatever is actually loaded, so the running curve cannot be
-recovered through CMD_READ_DSP_PARAM. Bypass flags and mixer gates are no
-better. Device Console solves this by not asking: it keeps its own settings
-file and shows that, which is why it can only display a tuning it made itself
-on a machine it made it on.
+Three things on this hardware can be written but not read, and they were
+established one at a time rather than assumed, by writing a known value and
+reading it back:
+
+  PEQ coefficients   answer zero. A distinctive probe written into a
+                     bypassed band still read back as five zeros, so the
+                     address is right and the region simply does not answer.
+                     Nor are they anywhere else: the readable parameter
+                     space is 0..~5098 words, every address above that
+                     refuses, and none of it contains a known coefficient.
+
+  Mixer gates        answer a constant 1, which is the encoding for "off".
+                     Writing 2 to a cell and reading it back still gives 1,
+                     so this is not a stale value, and all sixteen answer 1
+                     while audio is passing.
+
+  Bypass flags       have no parameter address at all; they are set by a
+                     command that takes the address as an argument.
+
+Everything else does read back, including two that were long assumed not to:
+crossover coefficients, and both the channel mute gate and polarity, each
+confirmed by writing both states to an unrouted output and reading them.
+
+Device Console never asks. It keeps its own settings file and shows that,
+which is why it can only display a tuning it made itself on the machine that
+made it.
 
 The data is on the device, though. Saving a preset writes two flash blocks,
 and CMD_READ_FLASH_FULL_ADDR reaches the whole 24-bit space, so the stored
