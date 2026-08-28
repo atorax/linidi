@@ -230,6 +230,16 @@ class NativeDevice:
             mf.save_slots(key, self._slots)
         return self._slots
 
+    def preset_slots_known(self) -> bool:
+        """Whether the block map is already in hand, so a read will be quick.
+
+        Lets a caller warn before a first read, which has to scan the part,
+        rather than appearing to hang for twenty-five seconds.
+        """
+        if self._slots:
+            return True
+        return bool(mf.load_slots(mf.device_key(self.info)))
+
     def read_stored_preset(self, index: int = 0, force: bool = False,
                            progress: Any = None) -> mf.StoredPreset:
         """The preset the device loads at power-on, decoded.

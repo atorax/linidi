@@ -115,19 +115,45 @@ does not depend on it.
 
 ## Settings and power cycles
 
-**This app changes what the device is doing now. It does not write the
-device's stored preset, and whether its changes survive a power cycle has not
-been measured.** Treat them as live until you have checked on your own
-hardware: apply something, power the device off and on, and read it back.
+**Apply changes what the device is doing now. It does not write the device's
+stored preset.** That is measured, not assumed: after applying a gain of
+-7.18 dB, the running parameter reads -7.18 and the same parameter in the
+stored preset still reads -7.0, the value the vendor's software last saved
+there.
 
-Device Console persists a preset differently -- it builds the whole preset
-image and writes it to flash as two blocks, values and bypasses, then verifies
--- and nothing here does that. Its single-parameter writes carry a mode byte
-its own code calls "withSave"; this app uses the other one, which is the mode
-that takes effect immediately and is what a measure-and-adjust loop wants.
+Device Console persists differently -- it builds the whole preset image and
+writes it to flash as two blocks, values and bypasses. Its single-parameter
+writes carry a mode byte its own code calls "withSave"; this app uses the
+other one, which takes effect immediately and is what a measure-and-adjust
+loop wants.
 
-Keeping a Device Console export, or this app's own project file, is the way to
-get a tuning back regardless.
+So treat an applied tuning as live until it has been saved, and keep the
+project file.
+
+---
+
+## Reading the device
+
+**Read** asks the hardware what it is set to, and gets a complete answer,
+including the parts that do not answer a parameter read at all: filter
+coefficients, per-filter bypass, and mixer routing. Those come out of the
+preset stored in the device's flash.
+
+This is worth spelling out because the vendor's software cannot do it.
+Device Console never reads a preset back -- it writes one and then shows you
+its own settings file -- which is why it can only display a tuning it made
+itself, on the machine that made it. Nothing here needs that file.
+
+The first read from a given unit spends about twenty-five seconds finding
+where its presets live in flash. That result is remembered per device, and
+later reads take about half a second.
+
+Two limits worth knowing. What is read is the *stored* preset, so anything
+applied but not saved is not in it. And while coefficients come back exactly,
+turning them back into a frequency and a Q loses a little, because the device
+stores float32: a band designed at 49 Hz reads back as 49.10 Hz, one at
+15 kHz reads back exact, and gains are unaffected. That loss happened when
+the filter was stored, so no reader of this hardware can avoid it.
 
 ---
 

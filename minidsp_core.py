@@ -1282,6 +1282,114 @@ def parse_device_console_xml(text: str) -> dict[str, Any]:
             "dsp_version": int(ver.group(1)) if ver else None}
 
 
+def _apply_stored_bands(dst_bands: list[dict[str, Any]],
+                        src_bands: list[dict[str, Any]],
+                        stats: dict[str, int]) -> None:
+    """Fold one channel's stored PEQ bank into the project's."""
+    for band in src_bands:
+        slot = band["index"]
+        if slot >= len(dst_bands):
+            break
+        dst = dst_bands[slot]
+        stats["peq"] += 1
+        bypassed = band.get("bypass")
+        if bypassed is not None:
+            dst["bypass_source"] = "device"
+            dst["enabled"] = not bypassed
+            if bypassed:
+                stats["bypassed"] += 1
+        dst["read_state"] = "stored"
+        if "type" in band:
+            dst.update(type=band["type"], freq=round(band["freq"], 1),
+                       q=round(band["q"], 4), gain=round(band["gain"], 2),
+                       manual=None)
+        elif band.get("active"):
+            # A real section the inverse does not cover. Kept verbatim so a
+            # round trip cannot quietly redesign what the device is running.
+            dst["manual"] = band["coeff"]
+        else:
+            # Unity coefficients: the slot holds no filter. The design on
+            # screen is left as it was rather than inventing one from a
+            # passthrough.
+            dst["manual"] = None
+
+
+def apply_stored_preset(project: dict[str, Any],
+                        cfg: dict[str, Any]) -> dict[str, int]:
+    """Fold a preset read out of the device's flash into a project.
+
+    The counterpart of apply_device_console_xml for data that came from the
+    hardware instead of a file. Addresses have already been resolved through
+    the address map by the device layer, so this matches on channel index.
+
+    Everything here is the device's own answer, including the three things a
+    live read cannot produce: coefficients, per-filter bypass, and mixer
+    gates. What it is not is a reading of what the DSP is running this
+    instant -- it is what the device loads at power-on, which is the same
+    thing unless something has been written live since.
+    """
+    stats = {"outputs": 0, "inputs": 0, "crossover": 0, "peq": 0,
+             "bypassed": 0, "routing": 0}
+
+    for src in cfg.get("outputs", []):
+        idx = src["index"]
+        if idx >= len(project["outputs"]):
+            continue
+        out = project["outputs"][idx]
+        stats["outputs"] += 1
+        for key in ("gain", "delay", "mute", "invert"):
+            if key in src:
+                out[key] = src[key]
+
+        for group in src.get("crossover", []):
+            gi = group["index"]
+            if gi >= len(out["crossover"]):
+                break
+            dst = out["crossover"][gi]
+            stats["crossover"] += 1
+            bypassed = group.get("bypass")
+            if bypassed is not None:
+                dst["bypass_source"] = "device"
+                dst["enabled"] = not bypassed
+                if bypassed:
+                    stats["bypassed"] += 1
+            dst["read_state"] = "stored"
+            if group.get("alignment") in ALIGNMENTS:
+                dst.update(mode=group["mode"], alignment=group["alignment"],
+                           order=group["order"], freq=group["freq"],
+                           manual=None)
+            elif group.get("active"):
+                dst["alignment"] = "custom"
+                dst["manual"] = group["coeff"]
+            else:
+                dst["manual"] = None
+
+        _apply_stored_bands(out["peq"], src.get("peq", []), stats)
+
+    for src in cfg.get("inputs", []):
+        idx = src["index"]
+        if idx >= len(project["inputs"]):
+            continue
+        inp = project["inputs"][idx]
+        stats["inputs"] += 1
+        for key in ("gain", "mute"):
+            if key in src:
+                inp[key] = src[key]
+        routes = {r["index"]: r for r in src.get("routing", [])}
+        for route in inp.get("routing", []):
+            found = routes.get(route["index"])
+            if not found:
+                continue
+            if "enabled" in found:
+                route["enabled"] = found["enabled"]
+                stats["routing"] += 1
+            if "gain" in found:
+                route["gain"] = found["gain"]
+        _apply_stored_bands(inp["peq"], src.get("peq", []), stats)
+
+    return stats
+
+
 def apply_device_console_xml(project: dict[str, Any], parsed: dict[str, Any],
                              amap: "AddressMap") -> dict[str, int]:
     """Fold a parsed Device Console export into a project.

@@ -945,14 +945,20 @@ def provenance_item(b: dict[str, Any]) -> QTableWidgetItem:
                "frequency, Q and gain no longer drive this band.")
     elif state == "unreadable":
         label, colour = "not readable", DANGER
-        tip = ("The device does not report PEQ contents, so this band was not "
-               "read.\nThe values shown are from the project, not from the "
-               "hardware.\nImport a Device Console export to load the "
-               "real ones.")
+        tip = ("Filter memory does not answer a parameter read, so this band "
+               "was not read.\nThe values shown are from the project, not "
+               "from the hardware.\nRead the stored preset to load the real "
+               "ones from the device.")
+    elif state == "stored":
+        label, colour = "from device", OK
+        tip = ("Read out of the device's stored preset, coefficients and "
+               "bypass together.\nThis is what the device loads at power-on. "
+               "Anything written live since\nthen has changed what is running "
+               "without changing this.")
     elif state == "config":
         label, colour = "from config", ACCENT
-        tip = ("Loaded from a Device Console export. The device cannot report "
-               "PEQ, so a config file is the authoritative source.")
+        tip = ("Loaded from a Device Console export. Used only where the "
+               "device's own stored preset could not be read.")
     elif manual:
         label, colour, tip = "imported", WARN, "Raw coefficients"
     elif state == "read":
@@ -2265,6 +2271,7 @@ class MainWindow(QMainWindow):
         self._name_col = 36
         self._topology_dsp: int | None = None
         self._last_config = None
+        self._last_stored = None
 
         self.setWindowTitle("LiniDi")
         self.setWindowIcon(app_icon())
@@ -2748,27 +2755,53 @@ class MainWindow(QMainWindow):
         except Exception:                                  # noqa: BLE001
             pass
 
+        # Only the direct-USB path can reach flash; over the daemon there is
+        # no way to issue a raw flash read.
+        native = self.readback if hasattr(self.readback,
+                                          "stored_config") else None
+        if native is not None and not native.preset_slots_known():
+            self.statusBar().showMessage(
+                "Reading from device -- first time on this unit, so its "
+                "flash is being mapped. About 25 seconds.")
+
         def work():
             outs = self.readback.read_all(n_out)
             ins = self.readback.read_inputs(n_in)
-            # The device cannot report PEQ, routing or bypass. Device Console
-            # keeps those beside the serial, in the same format as an export,
-            # so read them from there rather than leaving the panels empty.
+            # Filter memory, bypass flags and mixer gates do not answer a
+            # parameter read, but they are all in the stored preset, so read
+            # that out of the device rather than reaching for a file.
+            stored = stored_error = None
+            if native is not None:
+                try:
+                    stored = native.stored_config(preset)
+                except Exception as exc:               # noqa: BLE001
+                    stored_error = str(exc)
+            # A settings file is the fallback for when that is unavailable:
+            # a device whose flash holds no preset we recognise, or a
+            # connection that cannot make raw flash reads at all.
             cfg = None
-            for d in core.find_console_settings(serial, self.opts.console_dir):
-                f = core.console_setting_file(d, preset)
-                if f:
-                    cfg = f
-                    break
-            return outs, ins, cfg
+            if stored is None:
+                for d in core.find_console_settings(serial,
+                                                    self.opts.console_dir):
+                    f = core.console_setting_file(d, preset)
+                    if f:
+                        cfg = f
+                        break
+            return outs, ins, stored, stored_error, cfg
 
         self.tasks.run(work, on_done=self._read_done,
                        on_error=self._read_failed)
 
     def _read_done(self, result):
-        readings, input_readings, cfg = result
+        readings, input_readings, stored, stored_error, cfg = result
         core.apply_readback(self.project, readings, input_readings)
         self._last_config = None
+        self._last_stored = None
+        if stored is not None:
+            # Applied after the live readings, deliberately: where both have
+            # something to say the device's own stored preset is the fuller
+            # answer, since it carries bypass and routing as well.
+            self._last_stored = core.apply_stored_preset(self.project, stored)
         if cfg is not None:
             try:
                 parsed = core.parse_device_console_xml(
@@ -2778,6 +2811,9 @@ class MainWindow(QMainWindow):
             except Exception as exc:                       # noqa: BLE001
                 self.statusBar().showMessage(
                     f"could not read {cfg.name}: {exc}", 8000)
+        elif stored_error:
+            self.statusBar().showMessage(
+                f"could not read the stored preset: {stored_error}", 8000)
         self.have_read = True
         self.dirty = False
         self.read_btn.setEnabled(True)
@@ -2793,14 +2829,20 @@ class MainWindow(QMainWindow):
         msg = (f"Read {len(readings)} outputs and "
                f"{len(input_readings)} inputs, "
                f"{active} crossover groups, from the device")
-        if self._last_config is not None:
-            msg += (f"  -  PEQ, routing and bypass loaded from "
-                    f"{self._last_config.name} (the device does not report "
-                    "them)")
+        if self._last_stored is not None:
+            s = self._last_stored
+            msg += (f"  -  PEQ, routing and bypass read from the device's "
+                    f"stored preset: {s['peq']} bands, {s['routing']} mixer "
+                    f"cells, {s['bypassed']} bypassed")
+        elif self._last_config is not None:
+            msg += (f"  -  the stored preset could not be read, so PEQ, "
+                    f"routing and bypass came from "
+                    f"{self._last_config.name}")
         elif unread:
-            msg += (f"  -  {unread} PEQ bands unavailable: this device "
-                    "reports neither PEQ nor routing, and no Device "
-                    "Console settings file was found. Use Import XML.")
+            msg += (f"  -  {unread} PEQ bands unavailable: filter memory "
+                    "does not answer a parameter read, no preset was found "
+                    "in this device's flash, and there is no Device Console "
+                    "settings file. Use Import XML.")
         self.statusBar().showMessage(msg, 15000)
 
     def _read_failed(self, msg):
