@@ -2295,6 +2295,14 @@ class MainWindow(QMainWindow):
         self.apply_btn.setToolTip(
             "Write this project to the hardware, overwriting what is loaded.")
         self.apply_btn.clicked.connect(self.on_apply)
+        # Deliberately not styled as the primary action. Apply is the one
+        # reached for while tuning; this is the rarer, heavier one, and it is
+        # the only control here whose effect outlives a power cycle.
+        self.save_device_btn = QPushButton("Save to device")
+        self.save_device_btn.setToolTip(
+            "Store this project in the device, so it is what the device "
+            "loads when powered on. Apply only changes what it is doing now.")
+        self.save_device_btn.clicked.connect(self.on_save_device)
         self.help_btn = QPushButton()
         self.help_btn.setIcon(help_icon(18))
         self.help_btn.setIconSize(QSize(18, 18))
@@ -2303,6 +2311,7 @@ class MainWindow(QMainWindow):
         self.help_btn.setToolTip("What this is, how it works, and what to be "
                                  "careful with")
         self.help_btn.clicked.connect(self.on_help)
+        self.master.add_trailing(self.save_device_btn, spacing=8)
         self.master.add_trailing(self.apply_btn, spacing=8)
         self.master.add_trailing(self.help_btn, spacing=8)
 
@@ -2688,12 +2697,14 @@ class MainWindow(QMainWindow):
         unknown = core.unknown_bypass(self.project) if self.project else []
         if unknown:
             self.warn_label.setText(
-                f"{len(unknown)} filter state(s) unknown - import your config "
+                f"{len(unknown)} filter state(s) unknown - read from device "
                 "to enable Apply")
             self.warn_label.setStyleSheet(f"color: {DANGER};")
             self.apply_btn.setEnabled(False)
+            self.save_device_btn.setEnabled(False)
             return
         self.apply_btn.setEnabled(True)
+        self.save_device_btn.setEnabled(True)
         if not self.have_read:
             self.warn_label.setText(
                 "Not yet read from device - Apply would overwrite it")
@@ -2876,12 +2887,14 @@ class MainWindow(QMainWindow):
                     if len(unknown) > 10 else "")
             QMessageBox.warning(
                 self, "Filter states unknown",
-                f"{len(unknown)} filter(s) were read from the hardware, which "
-                "cannot report whether a filter is bypassed.\n\n"
+                f"{len(unknown)} filter(s) have an unknown bypass state: a "
+                "parameter read cannot report whether a filter is "
+                "bypassed.\n\n"
                 f"{shown}{more}\n\n"
-                "Import your Device Console export to load the real states, "
-                "or click each filter's enable box to set it explicitly. "
-                "Applying now would switch filters on or off at random.")
+                "Read from device to load the real states -- the stored "
+                "preset carries every one -- or click each filter's enable "
+                "box to set it explicitly. Applying now would switch filters "
+                "on or off at random.")
             return
 
         if not self.have_read:
@@ -2923,13 +2936,94 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Apply failed: {msg}", 8000)
         QMessageBox.warning(self, "Apply failed", msg)
 
+    def on_save_device(self):
+        """Write the project into the device's stored preset.
+
+        Kept separate from Apply on purpose. Apply changes what the device is
+        doing now and is undone by a power cycle; this changes what it comes
+        back as, and is not undone by anything.
+        """
+        native = self.daemon if hasattr(self.daemon,
+                                        "save_stored_preset") else None
+        if native is None:
+            QMessageBox.warning(
+                self, "Cannot save to device",
+                "Saving writes the device's flash directly, which needs the "
+                "USB connection. This session is going through minidspd.")
+            return
+
+        # The same two refusals as Apply, for the same reasons -- and they
+        # matter more here, because what is written survives a power cycle.
+        unstable = core.unstable_filters(self.project)
+        if unstable:
+            QMessageBox.warning(
+                self, "Unstable filter",
+                "These bands have coefficients whose poles are on or outside "
+                "the unit circle:\n\n  "
+                + "\n  ".join(unstable[:10])
+                + "\n\nA section like that does not filter, it runs away, and "
+                  "its output goes straight to a driver. Saving it would make "
+                  "that the state the device powers on into.")
+            return
+        unknown = core.unknown_bypass(self.project)
+        if unknown:
+            QMessageBox.warning(
+                self, "Filter states unknown",
+                f"{len(unknown)} filter(s) have an unknown bypass state, so "
+                "the app does not know what it would be storing.\n\n"
+                "Read from device first: the stored preset carries every "
+                "filter's bypass flag.")
+            return
+
+        preset = "?"
+        try:
+            preset = self.daemon.status()["master"]["preset"]
+        except Exception:                                  # noqa: BLE001
+            pass
+        resp = QMessageBox.warning(
+            self, "Save to device?",
+            f"This overwrites preset {preset} in the device's own memory -- "
+            "what it loads when it is powered on.\n\n"
+            "It replaces whatever is stored there now, including a tuning "
+            "made in Device Console. The blocks are read back and checked "
+            "afterwards, but there is no undo.\n\n"
+            "Turn your amplifiers off first.",
+            QMessageBox.Save | QMessageBox.Cancel, QMessageBox.Cancel)
+        if resp != QMessageBox.Save:
+            return
+
+        self.save_device_btn.setEnabled(False)
+        self.statusBar().showMessage(
+            f"Saving to preset {preset} and reading it back to check...")
+        payload = core.build_config_payload(copy.deepcopy(self.project))
+        self.tasks.run(lambda: native.save_stored_preset(payload),
+                       on_done=self._save_device_done,
+                       on_error=self._save_device_failed)
+
+    def _save_device_done(self, stats):
+        self.save_device_btn.setEnabled(True)
+        self.statusBar().showMessage(
+            f"Saved to preset {stats['preset']}: {stats['parameters']} "
+            f"parameters and {stats['bypass_flags']} bypass flags, read back "
+            f"and verified", 15000)
+
+    def _save_device_failed(self, msg):
+        self.save_device_btn.setEnabled(True)
+        self.statusBar().showMessage(f"Save failed: {msg}", 10000)
+        QMessageBox.warning(
+            self, "Save to device failed",
+            f"{msg}\n\nThe running configuration is untouched either way: "
+            "saving writes the stored preset, not the live parameters.")
+
     def on_import_xml(self):
         """Load a Device Console preset export.
 
-        Readback recovers coefficients but not bypass state, because bypass is
-        set by command 0x19 and has no readable address. An export carries it,
-        so importing one is the only way to know which filters are really in
-        circuit -- which is why this counts as having read the device.
+        Bypass has no readable parameter address, so this was once the only
+        way to know which filters were really in circuit. Reading the stored
+        preset now recovers the same thing from the device itself, and this
+        remains for loading a tuning from a file -- one made on another
+        machine, or for a device whose flash holds nothing recognisable.
+        Either way it counts as having read the device.
         """
         if self.amap is None:
             QMessageBox.warning(

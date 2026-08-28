@@ -136,6 +136,10 @@ class StoredPreset:
     values: bytes = b""
     bypass: dict[int, bool] = field(default_factory=dict)
     kinds: dict[int, int] = field(default_factory=dict)
+    # The bypass payload exactly as it was read. Saving edits this rather
+    # than rebuilding it from the decoded flags, so entry order and any
+    # filter kind this app does not model survive a round trip untouched.
+    bypass_raw: bytes = b""
 
     # -- parameter access -------------------------------------------------
 
@@ -319,6 +323,7 @@ def read_preset(dev: mp.MiniDSP, slot: Slot,
     preset = StoredPreset(index=slot.index, values=values)
     if slot.bypass is not None:
         raw = _read_span(dev, slot.bypass.payload, slot.bypass.payload_len)
+        preset.bypass_raw = raw
         preset.bypass, preset.kinds = decode_bypass(raw)
     return preset
 
@@ -336,6 +341,136 @@ def decode_bypass(raw: bytes) -> tuple[dict[int, bool], dict[int, int]]:
         flags[addr] = bool(tag & BYPASS_BIT)
         kinds[addr] = kind
     return flags, kinds
+
+
+# ---------------------------------------------------------------------------
+# writing
+# ---------------------------------------------------------------------------
+
+def header_for(kind: str, payload_len: int) -> bytes:
+    """The header the firmware expects ahead of a block's payload.
+
+    Built the way DeviceFlash::writeFlashBlocks() builds it, and checked the
+    only way that really settles it: the headers this produces are byte for
+    byte the ones already sitting in front of the blocks in flash.
+    """
+    if kind == "vals":
+        total = VALS_HEADER_LEN + payload_len
+        b = total.to_bytes(4, "big")
+        return bytes([(b[1] & 0xF0) | VALS_TAG, b[2], b[3]]) + VALS_MAGIC
+    if kind == "bypass":
+        total = BYPASS_HEADER_LEN + payload_len
+        b = total.to_bytes(4, "big")
+        return bytes([BYPASS_TAG, b[2], b[3]])
+    raise ValueError(f"unknown block kind {kind!r}")
+
+
+def replace_words(values: bytes, changes: dict[int, int]) -> bytes:
+    """A values image with some parameters replaced, and the rest untouched.
+
+    This is the whole reason a save reads before it writes. The image covers
+    every parameter the DSP has, and the address maps describe a fraction of
+    them -- compressor and FIR memory among the gaps. Building an image from
+    only what this app models would write zeros over everything it does not,
+    so what is stored is edited instead of regenerated.
+    """
+    buf = bytearray(values)
+    for addr, word in changes.items():
+        off = addr * WORD
+        if off < 0 or off + WORD > len(buf):
+            raise ValueError(
+                f"parameter {addr} is outside the stored image "
+                f"({len(buf) // WORD} words)")
+        struct.pack_into("<I", buf, off, word & 0xFFFFFFFF)
+    return bytes(buf)
+
+
+def replace_bypass(raw: bytes, changes: dict[int, bool]) -> bytes:
+    """A bypass payload with some flags flipped, and the rest untouched.
+
+    Entries keep their order and their kind byte; only the bypass bit moves.
+    An address the block does not already list cannot be added, because its
+    position in the table is the firmware's to choose, not ours.
+    """
+    buf = bytearray(raw)
+    seen = set()
+    for i in range(0, len(buf) - 2, 3):
+        addr = (buf[i + 1] << 8) | buf[i + 2]
+        if addr in changes:
+            seen.add(addr)
+            if changes[addr]:
+                buf[i] |= BYPASS_BIT
+            else:
+                buf[i] &= ~BYPASS_BIT
+    missing = set(changes) - seen
+    if missing:
+        raise ValueError(
+            f"the stored bypass table does not list "
+            f"{sorted(missing)[:8]}; refusing to invent entries for it")
+    return bytes(buf)
+
+
+def write_block(dev: mp.MiniDSP, block_id: int, kind: str, payload: bytes,
+                progress: Callable[[int, int], None] | None = None) -> None:
+    """Write one whole flash block: header, payload, then finish."""
+    dev.write_flash_block(block_id, header_for(kind, len(payload)),
+                          header=True)
+    sent = 0
+    while sent < len(payload):
+        sent += dev.write_flash_block(block_id, payload[sent:])
+        if progress is not None:
+            progress(sent, len(payload))
+    dev.finish_flash_block(block_id)
+
+
+def save_preset(dev: mp.MiniDSP, slot: Slot, values: bytes,
+                bypass: bytes | None = None,
+                progress: Callable[[int, int], None] | None = None) -> None:
+    """Write a preset's two blocks to the device.
+
+    The blocks go to whichever preset is *active*, not to `slot`: the write
+    command names a block, never an address, and the firmware puts it in the
+    running preset. `slot` says where to read the result back from, so it has
+    to be the active one, and the caller is responsible for that being true.
+    """
+    if len(values) != slot.vals.payload_len:
+        raise ValueError(
+            f"values image is {len(values)} bytes but the block holds "
+            f"{slot.vals.payload_len}")
+    write_block(dev, mp.FLASH_BLOCK_PRESET_VALS, "vals", values, progress)
+    if bypass is not None:
+        if slot.bypass is None:
+            raise ValueError("this slot has no bypass block to write")
+        if len(bypass) != slot.bypass.payload_len:
+            raise ValueError(
+                f"bypass payload is {len(bypass)} bytes but the block holds "
+                f"{slot.bypass.payload_len}")
+        write_block(dev, mp.FLASH_BLOCK_PRESET_BYPASS, "bypass", bypass)
+
+
+def verify_preset(dev: mp.MiniDSP, slot: Slot, values: bytes,
+                  bypass: bytes | None = None) -> None:
+    """Read both blocks back and insist they match, byte for byte.
+
+    Device Console's own verify step reads a single EEPROM key and checks it
+    against a constant, which says nothing about whether the preset arrived
+    intact. Since the blocks can be read back, they are.
+    """
+    got = _read_span(dev, slot.vals.payload, slot.vals.payload_len)
+    if got != values:
+        bad = next((i for i, (a, b) in enumerate(zip(got, values)) if a != b),
+                   min(len(got), len(values)))
+        raise mp.ProtocolError(
+            f"the values block read back differently from what was written, "
+            f"first at parameter {bad // WORD}: the preset on the device is "
+            f"not what was meant to be saved")
+    if bypass is not None and slot.bypass is not None:
+        got = _read_span(dev, slot.bypass.payload, slot.bypass.payload_len)
+        if got != bypass:
+            raise mp.ProtocolError(
+                "the bypass block read back differently from what was "
+                "written: the preset on the device is not what was meant "
+                "to be saved")
 
 
 # ---------------------------------------------------------------------------

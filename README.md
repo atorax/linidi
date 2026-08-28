@@ -127,8 +127,25 @@ writes carry a mode byte its own code calls "withSave"; this app uses the
 other one, which takes effect immediately and is what a measure-and-adjust
 loop wants.
 
-So treat an applied tuning as live until it has been saved, and keep the
-project file.
+**Save to device** is the other half. It writes the project into the stored
+preset, so it becomes what the device loads at power-on. It writes to
+whichever preset is active, because that is the only one the device will
+write: the command names a block, never an address, and the firmware puts it
+in the running preset.
+
+Two things it does that the vendor's software does not. It reads the stored
+image first and edits it, rather than generating one from scratch -- the
+image covers every parameter the DSP has, and this app models only some of
+them, so a generated image would zero the rest. And it reads both blocks back
+afterwards and compares them byte for byte; Device Console's verify step
+reads a single EEPROM key and checks it against a constant, which cannot tell
+whether the preset arrived.
+
+Saving does not change what the device is doing at that moment -- it writes
+the stored preset, not the live parameters. Apply is what changes the sound.
+
+There is no undo, so turn your amplifiers off first, and keep the project
+file.
 
 ---
 

@@ -152,6 +152,22 @@ PRESET_SWITCH = 2
 MODE_APPLY = 0xA0
 MODE_ALT = 0x80
 
+# Flash blocks, as Device Console's FlashBlockId enum numbers them. Block 0 is
+# the DSP firmware and is named here only so that it can be refused: nothing
+# in this app has any business writing it, and a stray 0 would otherwise be a
+# valid-looking argument that starts a firmware write.
+FLASH_BLOCK_DSP_FW = 0x00
+FLASH_BLOCK_PRESET_VALS = 0x01
+FLASH_BLOCK_PRESET_BYPASS = 0x02
+WRITABLE_FLASH_BLOCKS = (FLASH_BLOCK_PRESET_VALS, FLASH_BLOCK_PRESET_BYPASS)
+
+# The block id is sent bare on the header chunk and with this bit set on every
+# chunk of payload after it, which is how the device tells the two apart.
+FLASH_BLOCK_DATA = 0x80
+
+# The device takes at most this much block payload per command.
+MAX_FLASH_BLOCK_CHUNK = 32
+
 # EEPROM addresses (byte-addressed space, reachable via CMD_READ_FLASH).
 # Every one of these matches the address Device Console reads for the same
 # thing, checked against its own source.
@@ -596,6 +612,37 @@ class MiniDSP:
                 f"short flash read at {addr:#08x}: wanted {size} bytes, got "
                 f"{len(body)}")
         return body
+
+    # -- flash blocks -----------------------------------------------------
+    #
+    # How a preset is stored. The host never says where a block goes: it
+    # names the block, and the firmware places it, which is why finding one
+    # again means searching for it. A block is written as a header chunk,
+    # then payload chunks, then a finish.
+
+    def write_flash_block(self, block_id: int, data: bytes,
+                          header: bool = False) -> int:
+        """One chunk of a flash block. Returns how many bytes were sent.
+
+        Refuses any block but the two that hold a preset. The firmware block
+        shares this command and this argument position, and the difference
+        between saving a tuning and starting a firmware write is one byte.
+        """
+        if block_id not in WRITABLE_FLASH_BLOCKS:
+            raise ProtocolError(
+                f"refusing to write flash block {block_id}: only the preset "
+                f"blocks {WRITABLE_FLASH_BLOCKS} may be written from here")
+        chunk = bytes(data)[:MAX_FLASH_BLOCK_CHUNK]
+        tag = block_id if header else (block_id | FLASH_BLOCK_DATA)
+        self.command(CMD_WRITE_FLASH_BLOCK, bytes([tag]) + chunk)
+        return len(chunk)
+
+    def finish_flash_block(self, block_id: int) -> None:
+        """Close a block, which is what commits it."""
+        if block_id not in WRITABLE_FLASH_BLOCKS:
+            raise ProtocolError(
+                f"refusing to finish flash block {block_id}")
+        self.command(CMD_FINISH_FLASH_BLOCK, bytes([block_id]))
 
     def read_floats(self, addr: int, count: int) -> list[float]:
         """DSP parameter read, up to the device's per-reply limit.

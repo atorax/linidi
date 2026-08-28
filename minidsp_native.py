@@ -20,6 +20,7 @@ License: Apache-2.0
 
 from __future__ import annotations
 
+import struct
 import threading
 from typing import Any
 
@@ -426,6 +427,122 @@ class NativeDevice:
                         self._dev.set_bypass(addr, bool(band["bypass"]))
                 for route in inp.get("routing", []):
                     self._set_route(inp["index"], route)
+
+    def save_stored_preset(self, payload: dict[str, Any],
+                           progress: Any = None) -> dict[str, int]:
+        """Write a project into the device's stored preset, and check it.
+
+        This is the one operation here that changes what the device does at
+        power-on. Everything else is live only.
+
+        Three things make it safer than rebuilding the preset from scratch,
+        which is what the vendor's software does:
+
+          * It edits the stored image rather than generating one. The image
+            holds every parameter the DSP has and the address maps describe
+            only some of them, so a generated image would zero whatever this
+            app does not model.
+          * It writes to the active preset because that is the only one the
+            device will write, and it says so rather than letting an index
+            argument imply otherwise.
+          * It reads both blocks back afterwards and compares them byte for
+            byte. The vendor's verify step reads one EEPROM key and checks it
+            against a constant, which cannot tell whether the preset arrived.
+        """
+        self._check_payload(payload)
+        active = int(self.status()["master"]["preset"])
+        slots = self.preset_slots()
+        if not 0 <= active < len(slots):
+            raise mp.ProtocolError(
+                f"the device reports preset {active}, but {len(slots)} "
+                f"preset slots were found in its flash")
+        slot = slots[active]
+        stored = self.read_stored_preset(active)
+
+        words, flags = self._preset_changes(payload)
+        values = mf.replace_words(stored.values, words)
+        bypass = (mf.replace_bypass(stored.bypass_raw, flags)
+                  if flags and stored.bypass_raw else None)
+
+        with self._lock:
+            mf.save_preset(self._dev, slot, values, bypass, progress)
+            mf.verify_preset(self._dev, slot, values, bypass)
+        return {"preset": active, "parameters": len(words),
+                "bypass_flags": len(flags)}
+
+    def _preset_changes(self, payload: dict[str, Any]
+                        ) -> tuple[dict[int, int], dict[int, bool]]:
+        """What a payload changes, as raw words and bypass flags.
+
+        Every value is encoded exactly as the DSP stores it, which is not
+        uniform: a gain is a float, a delay is an integer sample count, and a
+        gate is the integer 1 or 2.
+        """
+        words: dict[int, int] = {}
+        flags: dict[int, bool] = {}
+
+        def put_float(addr: int, value: float) -> None:
+            words[addr] = struct.unpack("<I", struct.pack("<f",
+                                                          float(value)))[0]
+
+        def put_int(addr: int, value: int) -> None:
+            words[addr] = int(value) & 0xFFFFFFFF
+
+        def put_biquad(addr: int, coeff: dict[str, float]) -> None:
+            for k, c in enumerate(_coeff_list(coeff)):
+                put_float(addr + k, c)
+
+        for out in payload.get("outputs", []):
+            spec = self.amap.outputs[out["index"]]
+            if "gain" in out and "gain" in spec:
+                put_float(spec["gain"], out["gain"])
+            if "delay" in out and "delay" in spec:
+                put_int(spec["delay"], _delay_samples(out["delay"], self.rate))
+            if "invert" in out and "invert" in spec:
+                put_int(spec["invert"], 1 if out["invert"] else 0)
+            if "mute" in out and "enable" in spec:
+                put_int(spec["enable"], _gate(out["mute"]))
+            peq_addrs = spec.get("peq", [])
+            for band in out.get("peq", []):
+                if band["index"] >= len(peq_addrs):
+                    continue
+                addr = peq_addrs[band["index"]]
+                put_biquad(addr, band["coeff"])
+                if band.get("bypass") is not None:
+                    flags[addr] = bool(band["bypass"])
+            bases = spec.get("xover_groups", [])
+            for group in out.get("crossover", []):
+                if group["index"] >= len(bases):
+                    continue
+                base = bases[group["index"]]
+                for k, bq in enumerate(group.get("coeff", [])[:XOVER_SLOTS]):
+                    put_biquad(base + k * BIQUAD_FLOATS, bq)
+                if group.get("bypass") is not None:
+                    flags[base] = bool(group["bypass"])
+
+        for inp in payload.get("inputs", []):
+            spec = self.amap.inputs[inp["index"]]
+            if "gain" in inp and "gain" in spec:
+                put_float(spec["gain"], inp["gain"])
+            if "mute" in inp and "enable" in spec:
+                put_int(spec["enable"], _gate(inp["mute"]))
+            peq_addrs = spec.get("peq", [])
+            for band in inp.get("peq", []):
+                if band["index"] >= len(peq_addrs):
+                    continue
+                addr = peq_addrs[band["index"]]
+                put_biquad(addr, band["coeff"])
+                if band.get("bypass") is not None:
+                    flags[addr] = bool(band["bypass"])
+            gains = spec.get("routing", [])
+            gates = spec.get("routing_status", [])
+            for route in inp.get("routing", []):
+                dest = route["index"]
+                if dest < len(gains) and "gain" in route:
+                    put_float(gains[dest], route["gain"])
+                if dest < len(gates):
+                    put_int(gates[dest], _gate(not route.get("enabled")))
+        return words, flags
 
     def _check_payload(self, payload: dict[str, Any]) -> None:
         """Reject a payload that does not fit this device, before writing.
