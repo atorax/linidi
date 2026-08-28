@@ -229,6 +229,22 @@ def default_project_path() -> Path:
     return current
 
 
+def device_dir() -> Path:
+    """Where things read off a particular unit are kept.
+
+    Flash images and Device Console exports carry a serial number and
+    somebody's tuning, so they live beside the program rather than in it,
+    and the repository ignores the folder. Opening file dialogs here saves
+    hunting for them, which is the only reason a program should have an
+    opinion about where a dialog starts.
+
+    Falls back to the home directory if the folder is not there, rather than
+    opening somewhere that does not exist.
+    """
+    here = bundle_dir() / "device"
+    return here if here.is_dir() else Path.home()
+
+
 def bundle_dir() -> Path:
     """The root of the source tree, or of a frozen build's unpacked files."""
     base = getattr(sys, "_MEIPASS", None)
@@ -2610,6 +2626,8 @@ class MainWindow(QMainWindow):
         # The last read's comparison of running against stored: what was
         # compared, what could not be, and what differed. None before a read.
         self._live_vs_stored = None
+        # Last folder used per kind of file dialog.
+        self._dirs: dict[str, Path] = {}
         # True while a write is in flight. Both writes share the one command
         # endpoint, and update_warning() runs from several places, so the
         # buttons' enabled state is derived from this rather than set by
@@ -3338,6 +3356,27 @@ class MainWindow(QMainWindow):
                 "on or off at random.")
             return False
 
+        # A write that takes a crossover out of circuit is the one mistake
+        # on this hardware that destroys something. An output whose
+        # high-pass disappears gets full range, and on an active system the
+        # driver behind it is a tweeter. Checked against what the device
+        # actually holds, not against what the app last thought, because the
+        # project can be replaced wholesale by an import.
+        lost = self._crossovers_lost()
+        if lost:
+            shown = "\n".join(f"  \u2022 {t}" for t in lost)
+            QMessageBox.critical(
+                self, "This would remove a crossover",
+                f"{len(lost)} output(s) have a filter in circuit now that "
+                f"this write would take out:\n\n{shown}\n\n"
+                "An output with no high-pass carries full range. If a "
+                "tweeter is on the other end of it, that destroys the "
+                "tweeter.\n\n"
+                "Read from device first if you meant to keep what is there. "
+                "If you really mean to remove it, switch the group off "
+                "yourself on the crossover panel and this will stop asking.")
+            return False
+
         if not self.have_read:
             resp = QMessageBox.warning(
                 self, "Overwrite device configuration?",
@@ -3354,6 +3393,43 @@ class MainWindow(QMainWindow):
             if resp == QMessageBox.Cancel:
                 return False
         return True
+
+    def _crossovers_lost(self) -> list[str]:
+        """Outputs whose crossover is in circuit now and would not be after.
+
+        Asks the device rather than trusting the project: an import replaces
+        the whole project, so the app's own idea of the previous state is
+        exactly what cannot be relied on here.
+
+        Says nothing if the device cannot be asked -- a guard that fires on
+        not knowing would block every write over the daemon.
+        """
+        native = self.daemon if hasattr(self.daemon,
+                                        "stored_config") else None
+        if native is None or self.project is None:
+            return []
+        try:
+            preset = int(self.daemon.status()["master"]["preset"])
+            stored = native.stored_config(preset)
+        except Exception:                                  # noqa: BLE001
+            return []
+        lost = []
+        mine = {c["index"]: c for c in self.project.get("outputs", [])}
+        for ch in stored.get("outputs", []):
+            out = mine.get(ch["index"])
+            if out is None:
+                continue
+            for g in ch.get("crossover", []):
+                if g.get("bypass") is not False or not g.get("active"):
+                    continue          # not in circuit on the device
+                gi = g["index"]
+                here = next((x for x in out.get("crossover", [])
+                             if x.get("index") == gi), None)
+                if here is None or not here.get("enabled"):
+                    name = out.get("name", f"Out {ch['index'] + 1}")
+                    lost.append(f"{name}: {g.get('mode')} at "
+                                f"{g.get('freq')} Hz would be switched off")
+        return lost
 
     def on_apply(self):
         """Write the edits to working memory, so they can be heard.
@@ -3456,6 +3532,24 @@ class MainWindow(QMainWindow):
         self.apply_btn.setEnabled(enabled)
         self.save_device_btn.setEnabled(enabled)
 
+    def _last_dir(self, kind: str) -> Path:
+        """Where a file dialog of this kind should open.
+
+        The folder last used for that kind of file, or the sensible default
+        for it: exports and flash images live in device/, projects wherever
+        the current one does. Remembered per kind so that importing an export
+        does not then send the project dialog off to the same place.
+        """
+        remembered = self._dirs.get(kind)
+        if remembered and remembered.is_dir():
+            return remembered
+        return device_dir() if kind == "xml" else self.project_path.parent
+
+    def _remember_dir(self, kind: str, path: str) -> None:
+        parent = Path(path).expanduser().parent
+        if parent.is_dir():
+            self._dirs[kind] = parent
+
     def on_import_xml(self):
         """Load a Device Console preset export.
 
@@ -3473,10 +3567,11 @@ class MainWindow(QMainWindow):
                 "Generate one with tools/gen_address_map.py.")
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import Device Console preset", str(Path.home()),
+            self, "Import Device Console preset", str(self._last_dir("xml")),
             "Device Console export (*.xml);;All files (*)")
         if not path:
             return
+        self._remember_dir("xml", path)
         try:
             text = Path(path).read_text(encoding="utf-8", errors="replace")
             parsed = core.parse_device_console_xml(text)
@@ -3488,6 +3583,33 @@ class MainWindow(QMainWindow):
                 self, "Nothing imported",
                 "No <filter> elements found. Is that a Device Console export?")
             return
+
+        # Say what the file contains before replacing anything with it. A
+        # stock export is a hundred flat bands, and importing one over a
+        # tuning removes every filter in it -- which is a reasonable thing
+        # to want and a terrible thing to do by accident. The two exports a
+        # device ships with look identical in a file dialog.
+        incoming = sum(1 for f in parsed["filters"].values()
+                       if abs(float(f.get("gain") or 0.0)) > 1e-9)
+        current = sum(1 for ch in (self.project["outputs"]
+                                   + self.project["inputs"])
+                      for b in ch.get("peq", [])
+                      if b.get("enabled")
+                      and abs(float(b.get("gain") or 0.0)) > 1e-9)
+        if current and incoming < current:
+            resp = QMessageBox.warning(
+                self, "This import removes filters",
+                f"{Path(path).name}\n\n"
+                f"It carries {incoming} band(s) with any boost or cut. This "
+                f"project currently has {current}.\n\n"
+                + ("Importing it will flatten the equalisation entirely."
+                   if incoming == 0 else
+                   "Importing it will replace what is here with fewer "
+                   "filters.")
+                + "\n\nNothing reaches the device until you save.",
+                QMessageBox.Ok | QMessageBox.Cancel, QMessageBox.Cancel)
+            if resp != QMessageBox.Ok:
+                return
 
         dsp = parsed.get("dsp_version")
         mine = self._topology_dsp
@@ -3542,18 +3664,21 @@ class MainWindow(QMainWindow):
 
     def on_save(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save project", str(self.project_path), "JSON (*.json)")
+            self, "Save project", str(self._last_dir("project")),
+            "JSON (*.json)")
         if path:
+            self._remember_dir("project", path)
             self.project_path = Path(path)
             self.save_project()
             self.statusBar().showMessage(f"Saved {path}", 5000)
 
     def on_load(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load project", str(self.project_path.parent),
+            self, "Load project", str(self._last_dir("project")),
             "JSON (*.json)")
         if not path:
             return
+        self._remember_dir("project", path)
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
