@@ -599,8 +599,24 @@ class MeterBar(QWidget):
         self._last = time.monotonic()
         self.setFixedHeight(15)
 
+    # A level below which there is nothing to show. Also where anything
+    # unrepresentable is sent.
+    FLOOR_DB = -120.0
+
     def set_value(self, db: float):
+        # A meter cannot display "not a number", and must not try. This
+        # device emits NaN from a channel whose compressor is running
+        # against digital silence, and one such sample used to be permanent:
+        # every comparison against NaN is False, so the ballistics below
+        # latch, display stays NaN for ever, and the bar sits full whatever
+        # arrives afterwards. Floor it and the meter recovers on its own.
+        if not math.isfinite(db):
+            db = self.FLOOR_DB
         self.value = db
+        if not math.isfinite(self.display):
+            self.display = self.FLOOR_DB
+        if not math.isfinite(self.peak):
+            self.peak = self.FLOOR_DB
         now = time.monotonic()
         if db > self.peak or now - self._peak_at > self.PEAK_HOLD_SEC:
             self.peak, self._peak_at = db, now
@@ -611,6 +627,10 @@ class MeterBar(QWidget):
 
     def animate(self):
         """Advance ballistics one frame."""
+        if not math.isfinite(self.display):
+            self.display = self.FLOOR_DB
+        if not math.isfinite(self.value):
+            self.value = self.FLOOR_DB
         now = time.monotonic()
         dt = max(0.0, now - self._last)
         self._last = now
