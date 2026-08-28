@@ -1754,7 +1754,12 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
     sometimes worse than one before it, and stopping there would leave the
     output further from its target than an earlier write already had it.
 
-    Returns (achieved_db, writes_performed).
+    Returns (achieved_db, request_db, writes_performed). The request is the
+    value that had to be *written* to land on achieved, and it matters as
+    much as the result: the device applies the same rounding when it loads a
+    preset at power-on, so storing the target rather than the request means
+    the gain comes back a step lower than it was tuned to. Whatever gets
+    saved to flash should be this, not the target.
     """
     def put(db: float) -> float:
         daemon.set_config({"outputs": [{"index": output, "gain": db}]})
@@ -1771,7 +1776,7 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
                 or abs(error) < abs(best_achieved - target_db)):
             best_request, best_achieved = request, achieved
         if abs(error) <= tol:
-            return achieved, writes
+            return achieved, request, writes
         # Push the request the other way by the observed error.
         request = max(-127.0, min(0.0, request - error))
 
@@ -1779,7 +1784,8 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
             best_achieved - target_db):
         achieved = put(best_request)
         writes += 1
-    return achieved, writes
+        return achieved, best_request, writes
+    return achieved, request, writes
 
 
 def apply_project(daemon: "Daemon", project: dict[str, Any],
@@ -1808,7 +1814,7 @@ def apply_project(daemon: "Daemon", project: dict[str, Any],
     payload = build_config_payload(project)
     daemon.set_config(payload)
     result: dict[str, Any] = {"outputs": len(payload["outputs"]),
-                              "corrected": []}
+                              "corrected": [], "gain_requests": {}}
     if not (verify_gains and readback):
         return result
 
@@ -1820,11 +1826,15 @@ def apply_project(daemon: "Daemon", project: dict[str, Any],
         achieved = readback.read_output(idx).get("gain")
         if achieved is None or abs(achieved - target) <= tol:
             continue
-        got, writes = write_gain_verified(daemon, readback, idx, target,
-                                          tol=tol)
+        got, request, writes = write_gain_verified(daemon, readback, idx,
+                                                   target, tol=tol)
         result["corrected"].append(
             {"output": idx, "target": target, "achieved": got,
-             "writes": writes})
+             "request": request, "writes": writes})
+        # What a save should put in flash for this output. Storing `target`
+        # means the device rounds it down again at power-on and the gain
+        # comes back a step below where it was tuned.
+        result["gain_requests"][idx] = request
     return result
 
 

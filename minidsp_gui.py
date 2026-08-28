@@ -3717,7 +3717,17 @@ class MainWindow(QMainWindow):
         payload = core.build_config_payload(copy.deepcopy(self.project))
 
         def work():
-            core.apply_project(self.daemon, project, readback=self.readback)
+            applied = core.apply_project(self.daemon, project,
+                                         readback=self.readback)
+            # Store what had to be written, not what was asked for. The
+            # device rounds a gain down when it applies one, and it does the
+            # same when it loads a preset at power-on -- so storing the
+            # target means the gain comes back a step below where it was
+            # tuned. Storing the request means power-on reproduces it.
+            for idx, request in (applied.get("gain_requests") or {}).items():
+                for out in payload.get("outputs", []):
+                    if out.get("index") == idx:
+                        out["gain"] = request
             return native.save_stored_preset(payload)
 
         self.tasks.run(work, on_done=self._save_device_done,
