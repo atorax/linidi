@@ -23,7 +23,11 @@ disable written with 0xa0 drops the channel from -19.1 dB to silence at once
 and the same write with 0x80 changes nothing audible.
 
 Device Console's own wrapper calls 0x80 "withSave" and 0xa0 is the default it
-never uses. It does not persist a configuration this way at all: to save, it
+never uses. minidsp-rs sends 0x80 as well, though it arrives there by another
+route: its Addr::write() sets the top bit of the address prefix when a flag
+it calls extra_bit is set, which produces the same byte. So a mixer disable
+sent through it should not take effect either -- worth reporting upstream,
+with the -19.1 dB measurement above as the evidence. It does not persist a configuration this way at all: to save, it
 builds the whole preset image and writes it as flash blocks, then verifies.
 
 So a parameter write changes what the device is doing now and leaves the
