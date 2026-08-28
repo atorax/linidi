@@ -8,12 +8,15 @@ Three things on this hardware can be written but not read, and they were
 established one at a time rather than assumed, by writing a known value and
 reading it back:
 
-  PEQ coefficients   answer zero. A distinctive probe written into a
-                     bypassed band still read back as five zeros, so the
-                     address is right and the region simply does not answer.
-                     Nor are they anywhere else: the readable parameter
-                     space is 0..~5098 words, every address above that
-                     refuses, and none of it contains a known coefficient.
+  PEQ coefficients   answer zero. A distinctive probe written into an
+                     unrouted channel's band still read back as five zeros,
+                     so the address is right and the region simply does not
+                     answer. Nor are they anywhere else: every one of the
+                     65536 addresses the read command can express was read,
+                     and 0..5098 is the whole parameter space. The other
+                     60437 answer with the address itself plus 0x1000000 --
+                     a synthesised reply, not storage -- and none of the
+                     space holds a known coefficient.
 
   Mixer gates        answer a constant 1, which is the encoding for "off".
                      Writing 2 to a cell and reading it back still gives 1,
