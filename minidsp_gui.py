@@ -589,19 +589,15 @@ class MeterBar(QWidget):
     DECAY_DB_PER_SEC = 90.0     # release rate of the bar
     PEAK_HOLD_SEC = 1.2         # how long the peak tick stays put
 
-    # The scale. A straight -60..0 dB bar leaves a high-passed channel
-    # empty most of the time -- a tweeter fed through a 2.6 kHz high pass
-    # carries far less energy than the woofer beside it, and sits below the
-    # floor while it is plainly audible.
+    # Bottom of the bar, in dB. Linear in dB from here to 0, which is what
+    # most digital peak meters do; a scale with a compressed bottom end is a
+    # deliberate choice rather than a convention, and this does not need one.
     #
-    # So the bar is bent rather than simply stretched: the bottom 30 dB of a
-    # 90 dB range gets a third of the width, and the -60..0 region everybody
-    # actually works in keeps the other two thirds. Stretching a linear
-    # scale to -90 instead would have made a quiet channel visible by taking
-    # resolution away from the top, which is where clipping happens.
-    SCALE_FLOOR = -90.0         # bottom of the bar
-    SCALE_KNEE = -60.0          # where the two segments meet
-    KNEE_FRAC = 0.33            # how much width the quiet segment gets
+    # -60 was too high: a tweeter behind a 2.6 kHz high pass and 7 dB of cut
+    # carries far less energy than the woofer beside it and sat below the
+    # floor while plainly audible. Lower this further if a channel still
+    # reads empty when you can hear it.
+    SCALE_FLOOR = -90.0
 
     def __init__(self, label: str):
         super().__init__()
@@ -678,16 +674,8 @@ class MeterBar(QWidget):
 
         def frac(db):
             """Where a level sits along the bar, 0 at the floor, 1 at 0 dB."""
-            if db <= self.SCALE_FLOOR:
-                return 0.0
-            if db >= 0.0:
-                return 1.0
-            if db < self.SCALE_KNEE:
-                span = self.SCALE_KNEE - self.SCALE_FLOOR
-                return (db - self.SCALE_FLOOR) / span * self.KNEE_FRAC
-            span = -self.SCALE_KNEE
-            return (self.KNEE_FRAC
-                    + (db - self.SCALE_KNEE) / span * (1.0 - self.KNEE_FRAC))
+            span = -self.SCALE_FLOOR
+            return max(0.0, min(1.0, (db - self.SCALE_FLOOR) / span))
 
         fill = int(bar_w * frac(self.display))
         if fill > 0:
