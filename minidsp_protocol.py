@@ -733,9 +733,15 @@ class MiniDSP:
         The same opcode also takes a list of addresses, all switched the same
         way, which would collapse the hundred-odd bypass writes an Apply makes
         into two. That is not used here on purpose: bypass is what puts a
-        filter into circuit on an active crossover, this form is the one
-        verified against the hardware, and the saving is a fraction of a
-        second on an operation the user has already decided to make.
+        filter into circuit on an active crossover, and this form is the one
+        verified against the hardware.
+
+        The saving was measured rather than guessed, so the trade is on the
+        record. A bypass write takes 6.6 ms against 1.5 ms for a parameter or
+        a biquad -- the slowest thing an Apply does -- and there are 116 of
+        them on a Flex 8, which is 766 ms of a 1.1 s Apply. Batching would
+        take back most of that and would swap a verified form for an
+        unverified one to do it. Deliberately not taken.
         """
         payload = (bytes([0x80 if bypassed else 0x00]) + addr_bytes(addr)
                    + struct.pack(">H", 0))
