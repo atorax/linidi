@@ -601,9 +601,27 @@ class MeterBar(QWidget):
 
 
 class ResponsePlot(QWidget):
-    """Log-frequency magnitude plot, painted directly (no plotting library)."""
+    """Log-frequency magnitude plot, painted directly (no plotting library).
+
+    The band markers are grabbable: drag one to move its frequency and gain,
+    and turn the wheel over it to change Q. Editing a filter on the curve it
+    draws is the point -- you aim at the shape you want rather than working
+    out which numbers produce it.
+
+    Dragging emits band_changed continuously so the curve and the table keep
+    up with the pointer, and band_committed once on release. The split is
+    what keeps a drag from marking the project dirty sixty times a second.
+    """
 
     DB_MIN, DB_MAX = -36.0, 18.0
+    GRAB_PX = 12.0              # how near the pointer must be to a marker
+    Q_PER_NOTCH = 1.12          # wheel step, multiplicative
+    Q_MIN, Q_MAX = 0.1, 20.0    # matches the spin boxes in PeqTable
+    F_MIN, F_MAX = 10.0, 24000.0
+    G_MIN, G_MAX = -24.0, 24.0
+
+    band_changed = Signal(int, dict)
+    band_committed = Signal()
 
     def __init__(self):
         super().__init__()
@@ -612,6 +630,92 @@ class ResponsePlot(QWidget):
         self.phases: list[dict[str, Any]] = []
         self.freqs = core.log_freqs(280)
         self.setMinimumHeight(200)
+        # Where each marker was actually drawn, so hit-testing matches what
+        # is on screen rather than where the band nominally sits -- markers
+        # get nudged apart when they overlap.
+        self._marks: list[tuple[int, QPointF, bool]] = []
+        self._drag: int | None = None
+        self._drag_scale: float | None = None
+        self.setMouseTracking(True)
+
+    # -- coordinates, and their inverses ---------------------------------
+
+    def _xf(self, x, w):
+        """Pointer x back to a frequency."""
+        span = max(1, w)
+        return 10.0 ** (LOG_F_LO + max(0.0, min(1.0, x / span)) * LOG_F_SPAN)
+
+    def _yd(self, y, h):
+        """Pointer y back to a level in dB."""
+        span = max(1, h)
+        frac = max(0.0, min(1.0, (span - y) / span))
+        return self.DB_MIN + frac * (self.DB_MAX - self.DB_MIN)
+
+    # -- grabbing --------------------------------------------------------
+
+    def _hit(self, pos) -> tuple[int, float | None] | None:
+        """The draggable marker under the pointer, nearest first."""
+        best = None
+        for index, pt, scale in self._marks:
+            d = math.hypot(pt.x() - pos.x(), pt.y() - pos.y())
+            if d <= self.GRAB_PX and (best is None or d < best[0]):
+                best = (d, index, scale)
+        return None if best is None else (best[1], best[2])
+
+    def mousePressEvent(self, ev):
+        if ev.button() != Qt.LeftButton:
+            return
+        hit = self._hit(ev.position())
+        if hit is None:
+            return
+        self._drag, self._drag_scale = hit
+        self._emit_from(ev.position())
+
+    def mouseMoveEvent(self, ev):
+        if self._drag is None:
+            self.setCursor(Qt.PointingHandCursor if self._hit(ev.position())
+                           else Qt.ArrowCursor)
+            return
+        self._emit_from(ev.position())
+
+    def mouseReleaseEvent(self, ev):
+        if self._drag is not None:
+            self._drag = None
+            self.band_committed.emit()
+
+    def _emit_from(self, pos):
+        fields = {"freq": round(max(self.F_MIN, min(
+            self.F_MAX, self._xf(pos.x(), self.width()))), 1)}
+        if self._drag_scale:
+            db = self._yd(pos.y(), self.height()) * self._drag_scale
+            fields["gain"] = round(max(self.G_MIN, min(self.G_MAX, db)), 2)
+        self.band_changed.emit(self._drag, fields)
+
+    def wheelEvent(self, ev):
+        """Q, on the band under the pointer.
+
+        Multiplicative so a notch feels the same at Q 0.5 and at Q 8, which
+        a fixed step does not: 0.1 is a fifth of the former and a eightieth
+        of the latter.
+        """
+        hit = self._hit(ev.position())
+        if hit is None:
+            ev.ignore()
+            return
+        index = hit[0]
+        band = next((b for b in self.bands if b.get("index") == index), None)
+        if band is None or band.get("q") is None:
+            ev.ignore()
+            return
+        steps = ev.angleDelta().y() / 120.0
+        if not steps:
+            ev.ignore()
+            return
+        q = float(band["q"]) * (self.Q_PER_NOTCH ** steps)
+        self.band_changed.emit(
+            index, {"q": round(max(self.Q_MIN, min(self.Q_MAX, q)), 3)})
+        self.band_committed.emit()
+        ev.accept()
 
     def set_curves(self, curves):
         self.curves = curves
@@ -785,6 +889,7 @@ class ResponsePlot(QWidget):
         font.setBold(True)
         p.setFont(font)
         placed: list[QPointF] = []
+        self._marks = []
         for band in self.bands:
             x = self._fx(max(20.0, min(20000.0, band["mark_f"])), w)
             y = self._fy(band["mark_db"], h)
@@ -797,6 +902,12 @@ class ResponsePlot(QWidget):
                     y = max(r + 1, min(h - r - 1, prev.y() - 2 * r - 1))
             pt = QPointF(x, y)
             placed.append(pt)
+            # Hit-testing uses the drawn position, nudge included, so the
+            # grab area is where the disc actually is rather than where the
+            # band would have been without the anti-overlap shuffle.
+            if band.get("grab"):
+                self._marks.append((band["index"], pt,
+                                    band.get("gain_scale")))
 
             colour = QColor(band["colour"])
             p.setPen(QPen(QColor(BG), 2))
@@ -1106,6 +1217,24 @@ class PeqTable(QTableWidget):
 
             self.setItem(r, self.C_SRC, provenance_item(b))
         self._loading = False
+
+    def refresh_values(self):
+        """Push the bands' numbers into the spin boxes, nothing else.
+
+        load() rebuilds every widget in the table, which is fine when a
+        channel is selected and far too heavy to do on each frame of a drag.
+        This moves the three numbers and leaves the widgets alone.
+        """
+        self._loading = True
+        try:
+            for r, b in enumerate(self.bands):
+                for col, key in ((self.C_FREQ, "freq"), (self.C_Q, "q"),
+                                 (self.C_GAIN, "gain")):
+                    sb = self.cellWidget(r, col)
+                    if sb is not None and b.get(key) is not None:
+                        sb.setValue(float(b[key]))
+        finally:
+            self._loading = False
 
     def _sync_badge(self, r: int):
         """Fill or hollow a badge as its band is switched on or off."""
@@ -1627,6 +1756,8 @@ class ChannelEditor(QWidget):
         root.addWidget(basics)
 
         self.plot = ResponsePlot()
+        self.plot.band_changed.connect(self._on_band_dragged)
+        self.plot.band_committed.connect(self._on_band_committed)
         root.addWidget(self.plot, 2)
         self.legend = QLabel("")
         self.legend.setObjectName("muted")
@@ -1704,6 +1835,38 @@ class ChannelEditor(QWidget):
         self._update_chain()
         self._loading = False
         self.refresh_plot()
+
+    def _on_band_dragged(self, index: int, fields: dict):
+        """A band was dragged or scrolled on the plot.
+
+        Updates the band, the table and the curve, but does not announce a
+        change: a drag produces these continuously, and marking the project
+        dirty on every frame would queue an autosave per pixel. The
+        announcement comes once, on release.
+        """
+        if self.chan is None:
+            return
+        band = next((b for b in self.chan.get("peq", [])
+                     if b.get("index") == index), None)
+        if band is None:
+            return
+        band.update(fields)
+        # Dragging is an explicit statement about where the band should be,
+        # so it counts as the user setting it -- the same as typing in the
+        # table.
+        band["enabled"] = True
+        band["bypass_source"] = "user"
+        table = self._active_peq()
+        if hasattr(table, "refresh_values"):
+            table.refresh_values()
+        self.refresh_plot()
+
+    def _on_band_committed(self):
+        """The drag ended. Now the project has changed."""
+        if self.chan is None:
+            return
+        self._active_peq().load(self.chan.get("peq", []))
+        self._emit()
 
     def _active_peq(self):
         """Whichever of the two tabs is currently showing."""
@@ -2019,6 +2182,22 @@ class ChannelEditor(QWidget):
                 "dbs": dbs,
                 "mark_f": f0,
                 "mark_db": dbs[nearest],
+                "q": b.get("q"),
+                # A band with typed coefficients has no frequency or gain to
+                # move -- its marker sits where the response peaks, not where
+                # a design parameter points -- so it is shown but not
+                # grabbable. Dragging it would have to invent a design and
+                # throw away what was typed.
+                "grab": not b.get("manual"),
+                # How the marker's height relates to the band's gain, so a
+                # drag can set a gain that puts the marker back under the
+                # pointer. A peaking filter reaches its full gain at f0; a
+                # shelf is only half way up there, so dragging one to +6
+                # means a gain of +12. None means the shape has no level to
+                # set and the drag is horizontal only -- dragging a
+                # high-pass vertically would write a gain its type ignores.
+                "gain_scale": {"peaking": 1.0, "lowshelf": 2.0,
+                               "highshelf": 2.0}.get(b.get("type")),
             })
         return out
 
