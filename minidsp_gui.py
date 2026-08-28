@@ -713,6 +713,7 @@ class ResponsePlot(QWidget):
     G_MIN, G_MAX = -24.0, 24.0
 
     band_changed = Signal(int, dict)
+    xover_changed = Signal(int, dict)
     band_committed = Signal()
 
     def __init__(self):
@@ -725,8 +726,8 @@ class ResponsePlot(QWidget):
         # Where each marker was actually drawn, so hit-testing matches what
         # is on screen rather than where the band nominally sits -- markers
         # get nudged apart when they overlap.
-        self._marks: list[tuple[int, QPointF, bool]] = []
-        self._drag: int | None = None
+        self._marks: list[tuple[str, int, QPointF, float | None]] = []
+        self._drag: tuple[str, int] | None = None
         self._drag_scale: float | None = None
         self.setMouseTracking(True)
 
@@ -745,14 +746,17 @@ class ResponsePlot(QWidget):
 
     # -- grabbing --------------------------------------------------------
 
-    def _hit(self, pos) -> tuple[int, float | None] | None:
-        """The draggable marker under the pointer, nearest first."""
+    def _hit(self, pos):
+        """The draggable marker under the pointer, nearest first.
+
+        Returns (kind, index, gain_scale) or None.
+        """
         best = None
-        for index, pt, scale in self._marks:
+        for kind, index, pt, scale in self._marks:
             d = math.hypot(pt.x() - pos.x(), pt.y() - pos.y())
             if d <= self.GRAB_PX and (best is None or d < best[0]):
-                best = (d, index, scale)
-        return None if best is None else (best[1], best[2])
+                best = (d, kind, index, scale)
+        return None if best is None else (best[1], best[2], best[3])
 
     def mousePressEvent(self, ev):
         if ev.button() != Qt.LeftButton:
@@ -760,7 +764,8 @@ class ResponsePlot(QWidget):
         hit = self._hit(ev.position())
         if hit is None:
             return
-        self._drag, self._drag_scale = hit
+        self._drag = (hit[0], hit[1])
+        self._drag_scale = hit[2]
         self._emit_from(ev.position())
 
     def mouseMoveEvent(self, ev):
@@ -776,12 +781,16 @@ class ResponsePlot(QWidget):
             self.band_committed.emit()
 
     def _emit_from(self, pos):
+        kind, index = self._drag
         fields = {"freq": round(max(self.F_MIN, min(
             self.F_MAX, self._xf(pos.x(), self.width()))), 1)}
         if self._drag_scale:
             db = self._yd(pos.y(), self.height()) * self._drag_scale
             fields["gain"] = round(max(self.G_MIN, min(self.G_MAX, db)), 2)
-        self.band_changed.emit(self._drag, fields)
+        if kind == "xover":
+            self.xover_changed.emit(index, fields)
+        else:
+            self.band_changed.emit(index, fields)
 
     def wheelEvent(self, ev):
         """Q, on the band under the pointer.
@@ -794,16 +803,38 @@ class ResponsePlot(QWidget):
         if hit is None:
             ev.ignore()
             return
-        index = hit[0]
-        band = next((b for b in self.bands if b.get("index") == index), None)
-        if band is None or band.get("q") is None:
-            ev.ignore()
-            return
+        kind, index, _scale = hit
+        entry = next((b for b in self.bands
+                      if b.get("index") == index
+                      and b.get("kind", "peq") == kind), None)
         steps = ev.angleDelta().y() / 120.0
-        if not steps:
+        if entry is None or not steps:
             ev.ignore()
             return
-        q = float(band["q"]) * (self.Q_PER_NOTCH ** steps)
+
+        if kind == "xover":
+            # Order, stepped through what this alignment actually offers
+            # rather than by arithmetic: Linkwitz-Riley has no odd orders,
+            # and landing on one would be a slope the device cannot build.
+            orders = core.crossover_orders(entry.get("alignment"))
+            if not orders:
+                ev.ignore()
+                return
+            try:
+                at = orders.index(int(entry.get("order")))
+            except (TypeError, ValueError):
+                at = 0
+            nxt = max(0, min(len(orders) - 1, at + int(round(steps))))
+            if orders[nxt] != entry.get("order"):
+                self.xover_changed.emit(index, {"order": orders[nxt]})
+                self.band_committed.emit()
+            ev.accept()
+            return
+
+        if entry.get("q") is None:
+            ev.ignore()
+            return
+        q = float(entry["q"]) * (self.Q_PER_NOTCH ** steps)
         self.band_changed.emit(
             index, {"q": round(max(self.Q_MIN, min(self.Q_MAX, q)), 3)})
         self.band_committed.emit()
@@ -998,8 +1029,8 @@ class ResponsePlot(QWidget):
             # grab area is where the disc actually is rather than where the
             # band would have been without the anti-overlap shuffle.
             if band.get("grab"):
-                self._marks.append((band["index"], pt,
-                                    band.get("gain_scale")))
+                self._marks.append((band.get("kind", "peq"), band["index"],
+                                    pt, band.get("gain_scale")))
 
             colour = QColor(band["colour"])
             p.setPen(QPen(QColor(BG), 2))
@@ -1007,7 +1038,8 @@ class ResponsePlot(QWidget):
             p.drawEllipse(pt, r, r)
             p.setPen(_readable_on(colour))
             p.drawText(QRectF(x - r, y - r, 2 * r, 2 * r),
-                       Qt.AlignCenter, str(band["index"]))
+                       Qt.AlignCenter,
+                       str(band.get("label", band["index"])))
 
 
 class CrossoverGroup(QGroupBox):
@@ -1078,15 +1110,11 @@ class CrossoverGroup(QGroupBox):
         # Every order that fits the four biquad slots a group has. LR36 and
         # the odd Butterworths above 3 were missing; Device Console offers
         # them, they fit, and they round-trip.
+        orders = core.crossover_orders(align)
         if align == "linkwitz-riley":
-            items = [(str(o), f"LR{o * 6}") for o in (2, 4, 6, 8)]
-        elif align == "bessel":
-            items = [(str(o), f"{o * 6} dB/oct") for o in range(2, 9)]
-        elif align == "butterworth":
-            items = [(str(o), f"{o * 6} dB/oct")
-                     for o in (1, 2, 3, 4, 5, 6, 7, 8)]
+            items = [(str(o), f"LR{o * 6}") for o in orders]
         else:
-            items = []
+            items = [(str(o), f"{o * 6} dB/oct") for o in orders]
         for value, label in items:
             self.order.addItem(label, value)
         idx = self.order.findText(prev)
@@ -1881,6 +1909,7 @@ class ChannelEditor(QWidget):
 
         self.plot = ResponsePlot()
         self.plot.band_changed.connect(self._on_band_dragged)
+        self.plot.xover_changed.connect(self._on_xover_dragged)
         self.plot.band_committed.connect(self._on_band_committed)
         root.addWidget(self.plot, 2)
         self.legend = QLabel("")
@@ -2031,6 +2060,23 @@ class ChannelEditor(QWidget):
         table = self._active_peq()
         if hasattr(table, "refresh_values"):
             table.refresh_values()
+        self.refresh_plot()
+
+    def _on_xover_dragged(self, index: int, fields: dict):
+        """A crossover marker was dragged or scrolled on the plot."""
+        if self.chan is None:
+            return
+        group = next((g for g in self.chan.get("crossover", [])
+                      if g.get("index") == index), None)
+        if group is None:
+            return
+        group.update(fields)
+        group["manual"] = None
+        group["enabled"] = True
+        group["bypass_source"] = "user"
+        for widget, g in zip(self.xo_groups, self.chan.get("crossover", [])):
+            if g is group:
+                widget.load(group)
         self.refresh_plot()
 
     def _on_band_committed(self):
@@ -2370,6 +2416,40 @@ class ChannelEditor(QWidget):
                 # high-pass vertically would write a gain its type ignores.
                 "gain_scale": {"peaking": 1.0, "lowshelf": 2.0,
                                "highshelf": 2.0}.get(b.get("type")),
+            })
+
+        # The crossover groups, lettered rather than numbered so a corner is
+        # never mistaken for a PEQ band. The marker sits on the group's own
+        # curve at its corner, which for a pass filter is some way down from
+        # 0 dB, so it lands on the line it labels.
+        for gi, group in enumerate(self.chan.get("crossover", [])):
+            if not group.get("enabled"):
+                continue
+            bqs = [b for b in core.crossover_biquads(group, rate)
+                   if not core.is_bypass(b)]
+            if not bqs:
+                continue
+            dbs = core.response_db(bqs, freqs, rate)
+            f0 = float(group.get("freq", 1000.0))
+            nearest = min(range(len(freqs)),
+                          key=lambda i: abs(freqs[i] - f0))
+            out.append({
+                "index": gi,
+                "label": "AB"[gi] if gi < 2 else str(gi + 1),
+                "kind": "xover",
+                "colour": ACCENT if gi == 0 else WARN,
+                "dbs": dbs,
+                "mark_f": f0,
+                "mark_db": dbs[nearest],
+                "q": None,
+                # No level to set, so a drag is horizontal only; the wheel
+                # steps the order rather than a Q.
+                "gain_scale": None,
+                "order": group.get("order"),
+                "alignment": group.get("alignment"),
+                # A group whose coefficients were typed has no corner to
+                # move, the same as a hand-typed PEQ band.
+                "grab": group.get("alignment") in core.ALIGNMENTS,
             })
         return out
 

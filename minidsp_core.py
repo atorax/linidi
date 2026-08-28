@@ -61,6 +61,21 @@ PEQ_TYPES = ("peaking", "lowshelf", "highshelf", "lowpass", "highpass",
 
 ALIGNMENTS = ("linkwitz-riley", "butterworth", "bessel")
 
+# Which orders each alignment offers, limited by the four biquad slots a
+# crossover group has. Linkwitz-Riley is even orders only, being two cascaded
+# Butterworths of half the order. Stated once because two things need it: the
+# slope menu, and the plot's wheel, which steps through the same list.
+CROSSOVER_ORDERS = {
+    "linkwitz-riley": (2, 4, 6, 8),
+    "butterworth": (1, 2, 3, 4, 5, 6, 7, 8),
+    "bessel": (2, 3, 4, 5, 6, 7, 8),
+}
+
+
+def crossover_orders(alignment: str) -> tuple[int, ...]:
+    """The orders this alignment can be built at, lowest first."""
+    return CROSSOVER_ORDERS.get(alignment, ())
+
 # Bessel sections as (Q, frequency ratio), normalised so the cascade is -3 dB
 # at the corner. Unlike Butterworth and Linkwitz-Riley, whose sections all sit
 # at the same frequency, a Bessel's are spread.
