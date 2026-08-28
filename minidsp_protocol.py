@@ -17,11 +17,19 @@ written to the HID interface padded to the report length.
 
 Write mode byte
 ---------------
-Parameter writes carry a mode byte ahead of the address. **0xa0** is the mode
-that reliably applies; 0x80 is acknowledged but a mixer *disable* written with
-it is silently ignored, which presents as routing changes that never take
-effect. Verified on a Flex 8: with 0x80 a disable does nothing, with 0xa0 the
-channel drops from -19.1 dB to silence immediately.
+Parameter writes carry a mode byte ahead of the address. This app sends
+**0xa0**, which takes effect immediately: verified on a Flex 8, where a mixer
+disable written with 0xa0 drops the channel from -19.1 dB to silence at once
+and the same write with 0x80 changes nothing audible.
+
+Device Console's own wrapper calls 0x80 "withSave" and 0xa0 is the default it
+never uses. It does not persist a configuration this way at all: to save, it
+builds the whole preset image and writes it as flash blocks, then verifies.
+
+So a write here changes what the device is doing now, and nothing in this app
+writes the preset store. See the note on persistence in the README: whether
+these settings survive a power cycle has not been measured, and the safe
+assumption is that they do not.
 
 Attribution
 -----------
@@ -131,6 +139,14 @@ ACK_TIMEOUT_MS = 200
 # The device serves at most this many floats in one reply.
 MAX_FLOATS_PER_READ = 14
 MAX_UNACKED_WRITES = 8
+
+# The second byte of a preset change. Device Console distinguishes all three:
+# it switches without a reset while loading configurations into slots, reloads
+# when re-selecting the slot already active, and switches when the user picks
+# a different one.
+PRESET_NO_RESET = 0
+PRESET_RELOAD = 1
+PRESET_SWITCH = 2
 
 # Parameter-write modes. See the module docstring: 0xa0 is the one that works.
 MODE_APPLY = 0xA0
@@ -669,14 +685,18 @@ class MiniDSP:
     def set_source(self, index: int) -> None:
         self.command(CMD_CHANGE_AUDIO_SRC, bytes([index & 0xFF]))
 
-    def set_preset(self, index: int, reset: bool = True) -> None:
+    def set_preset(self, index: int, mode: int = PRESET_SWITCH) -> None:
         """Switch preset, reloading the DSP so the new one takes effect.
 
-        The second byte asks the device to reset after switching. It was being
-        sent as 0, which was a guess; both reference implementations send 1 --
-        Device Console's command defaults to it, and minidsp-rs names the
-        field `reset` and passes true. Without it the preset changes without
-        the DSP being reloaded.
+        The second byte is not a flag but one of three modes, which is what
+        Device Console's own call sites show: it changes preset without a
+        reset while writing a configuration into each slot in turn, asks for
+        PRESET_RELOAD when re-selecting the slot already active, and asks for
+        PRESET_SWITCH from the handler behind its preset control -- the case
+        this is. Its bulk-import path picks between the last two on exactly
+        that distinction.
+
+        This was originally sent as 0, which changed the preset without the
+        DSP reloading it.
         """
-        self.command(CMD_CHANGE_PRESET,
-                     bytes([index & 0xFF, 1 if reset else 0]))
+        self.command(CMD_CHANGE_PRESET, bytes([index & 0xFF, mode & 0xFF]))

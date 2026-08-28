@@ -113,6 +113,24 @@ does not depend on it.
 
 ---
 
+## Settings and power cycles
+
+**This app changes what the device is doing now. It does not write the
+device's stored preset, and whether its changes survive a power cycle has not
+been measured.** Treat them as live until you have checked on your own
+hardware: apply something, power the device off and on, and read it back.
+
+Device Console persists a preset differently -- it builds the whole preset
+image and writes it to flash as two blocks, values and bypasses, then verifies
+-- and nothing here does that. Its single-parameter writes carry a mode byte
+its own code calls "withSave"; this app uses the other one, which is the mode
+that takes effect immediately and is what a measure-and-adjust loop wants.
+
+Keeping a Device Console export, or this app's own project file, is the way to
+get a tuning back regardless.
+
+---
+
 ## Safety
 
 **An active crossover has no passive network protecting your drivers.** A wrong
