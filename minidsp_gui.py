@@ -91,18 +91,20 @@ def _readable_on(colour: QColor) -> QColor:
     return QColor("#12141a") if lum > 140 else QColor("#ffffff")
 
 
-def peq_badge(index: int, size: int = 20, active: bool = True) -> QPixmap:
-    """A numbered disc identifying one PEQ band.
+def disc_badge(text: str, colour_name: str, size: int = 20,
+               active: bool = True) -> QPixmap:
+    """A small filled disc with a character in it.
 
-    A band that is switched off is drawn hollow rather than in its colour, so
-    the column doubles as a legend: filled discs are the filters actually in
-    circuit, and you can see which at a glance without reading the checkboxes.
+    The same mark the response plot puts on a filter, so a card and its
+    curve are identifiably the same thing. Drawn hollow when the filter is
+    switched off, which turns any column of these into a legend: the filled
+    ones are what is actually in circuit.
     """
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing, True)
-    colour = QColor(peq_colour(index))
+    colour = QColor(colour_name)
     r = QRectF(1.0, 1.0, size - 2.0, size - 2.0)
     if active:
         p.setBrush(colour)
@@ -121,9 +123,28 @@ def peq_badge(index: int, size: int = 20, active: bool = True) -> QPixmap:
     f.setPointSizeF(max(7.0, size * 0.5))
     f.setBold(active)
     p.setFont(f)
-    p.drawText(pm.rect(), Qt.AlignCenter, str(index))
+    p.drawText(pm.rect(), Qt.AlignCenter, text)
     p.end()
     return pm
+
+
+def peq_badge(index: int, size: int = 20, active: bool = True) -> QPixmap:
+    """The numbered disc identifying one PEQ band."""
+    return disc_badge(str(index), peq_colour(index), size, active)
+
+
+# The two crossover groups are lettered, not numbered, so a corner is never
+# read as a band. These are the colours their markers take on the plot.
+XOVER_LABELS = ("A", "B")
+XOVER_COLOURS = (ACCENT, WARN)
+
+
+def xover_label(index: int) -> str:
+    return XOVER_LABELS[index] if index < len(XOVER_LABELS) else str(index + 1)
+
+
+def xover_colour(index: int) -> str:
+    return XOVER_COLOURS[index % len(XOVER_COLOURS)]
 
 
 # Vertical padding on a list item. Rows that hold a widget have to add this to
@@ -1047,17 +1068,36 @@ class CrossoverGroup(QGroupBox):
 
     changed = Signal()
 
-    def __init__(self, title: str):
-        super().__init__(title)
+    def __init__(self, index: int):
+        self.index = index
+        letter = xover_label(index)
+        super().__init__(f"Crossover {letter}")
         self.data: dict[str, Any] = {}
+        # The title carries the colour its marker has on the plot, so the
+        # card and the disc on the curve read as the same object.
+        self.setStyleSheet(
+            f"QGroupBox::title {{ color: {xover_colour(index)}; }}")
         lay = QGridLayout(self)
         lay.setContentsMargins(10, 6, 10, 8)
 
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(8)
+        self.badge = QLabel()
+        self.badge.setPixmap(disc_badge(letter, xover_colour(index), 20))
+        self.badge.setToolTip(
+            f"Group {letter} on the response plot. Drag its marker to move "
+            f"the corner, or turn the wheel over it to change the slope.")
+        head.addWidget(self.badge)
         self.enabled = QCheckBox("Enabled")
         self.enabled.setTristate(True)
         self.enabled.clicked.connect(self._enabled_clicked)
         self.enabled.toggled.connect(self._emit)
-        lay.addWidget(self.enabled, 0, 0, 1, 2)
+        head.addWidget(self.enabled)
+        head.addStretch(1)
+        holder = QWidget()
+        holder.setLayout(head)
+        lay.addWidget(holder, 0, 0, 1, 2)
 
         self.mode = QComboBox()
         self.mode.addItems(["highpass", "lowpass"])
@@ -1138,6 +1178,11 @@ class CrossoverGroup(QGroupBox):
     def load(self, group: dict[str, Any]):
         self._loading = True
         self.data = group
+        # Filled when the group is in circuit, hollow when it is not, which
+        # is exactly when its marker is on the plot and when it is not.
+        self.badge.setPixmap(disc_badge(
+            xover_label(self.index), xover_colour(self.index), 20,
+            bool(group.get("enabled"))))
         known = group.get("bypass_source", "default") != "unknown"
         self.enabled.setTristate(not known)
         if known:
@@ -1924,8 +1969,7 @@ class ChannelEditor(QWidget):
         side_l.setContentsMargins(0, 0, 0, 0)
 
         xo = QVBoxLayout()          # stacked, the side column is narrow
-        self.xo_groups = [CrossoverGroup("Crossover group 1"),
-                          CrossoverGroup("Crossover group 2")]
+        self.xo_groups = [CrossoverGroup(0), CrossoverGroup(1)]
         for g in self.xo_groups:
             g.changed.connect(self._emit)
             xo.addWidget(g)
