@@ -23,6 +23,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+import minidsp_flash as mf
 import minidsp_protocol as mp
 from minidsp_protocol import MAX_FLOATS_PER_READ
 from minidsp_core import (COEFF_KEYS, MAX_DELAY_SAMPLES,
@@ -99,6 +100,10 @@ class NativeDevice:
         self.amap = amap
         self.rate = amap.rate
         self._lock = threading.Lock()
+        # Located preset blocks, filled in on first use. None means "not
+        # looked yet", which is different from an empty list meaning "looked
+        # and this device has none".
+        self._slots: list[mf.Slot] | None = None
         # open_device() passes the connection it already identified; opening
         # one here is the path for a caller that knows which map it wants.
         self._dev = connection or mp.MiniDSP(product_id=product_id,
@@ -199,6 +204,128 @@ class NativeDevice:
         out["peq"] = [describe_peq_band(as_biquad(blocks[a]), i, self.rate)
                       for i, a in enumerate(peq_addrs)]
         return out
+
+    # -- the stored preset -------------------------------------------------
+
+    def preset_slots(self, force: bool = False,
+                     progress: Any = None) -> list[mf.Slot]:
+        """Where this device keeps its presets, located once and remembered.
+
+        Locating means reading a header-sized window at every 256-byte
+        boundary of the part, which takes about twenty-five seconds on a Flex
+        8. The answer only changes if the firmware is rewritten, so it is kept
+        under the device's own identity and reused.
+        """
+        key = mf.device_key(self.info)
+        if not force:
+            if self._slots is None:
+                self._slots = mf.load_slots(key)
+            if self._slots:
+                return self._slots
+        with self._lock:
+            size = mf.flash_size(self._dev)
+            blocks = mf.scan_blocks(self._dev, end=size, progress=progress)
+        self._slots = mf.pair_slots(blocks)
+        if self._slots:
+            mf.save_slots(key, self._slots)
+        return self._slots
+
+    def read_stored_preset(self, index: int = 0, force: bool = False,
+                           progress: Any = None) -> mf.StoredPreset:
+        """The preset the device loads at power-on, decoded.
+
+        Not the same question as read_output(): this is what is stored, and a
+        parameter written live changes what is running without touching it.
+        """
+        slots = self.preset_slots(force=force)
+        if not 0 <= index < len(slots):
+            raise mp.ProtocolError(
+                f"preset {index} was asked for, but {len(slots)} preset "
+                f"slots were found in this device's flash")
+        with self._lock:
+            return mf.read_preset(self._dev, slots[index], progress)
+
+    def stored_config(self, index: int = 0,
+                      preset: mf.StoredPreset | None = None
+                      ) -> dict[str, Any]:
+        """A whole stored preset in the shape the rest of the app speaks.
+
+        Carries three things a live read cannot produce at all: filter
+        coefficients, which read back as zero; per-filter bypass flags, which
+        live nowhere in parameter memory; and mixer gates, which answer with a
+        constant whatever the routing really is.
+        """
+        p = preset if preset is not None else self.read_stored_preset(index)
+        ins: list[dict[str, Any]] = []
+        for i, spec in enumerate(self.amap.inputs):
+            ch: dict[str, Any] = {"index": i}
+            self._stored_common(ch, spec, p)
+            routes = []
+            gains = spec.get("routing", [])
+            gates = spec.get("routing_status", [])
+            for out_idx in range(max(len(gains), len(gates))):
+                route: dict[str, Any] = {"index": out_idx}
+                if out_idx < len(gains):
+                    g = p.f32(gains[out_idx])
+                    if g is not None:
+                        route["gain"] = round(g, 3)
+                if out_idx < len(gates):
+                    raw = p.i32(gates[out_idx])
+                    if raw in (GATE_MUTED, GATE_PASSING):
+                        route["enabled"] = raw == GATE_PASSING
+                routes.append(route)
+            if routes:
+                ch["routing"] = routes
+            ins.append(ch)
+
+        outs: list[dict[str, Any]] = []
+        for i, spec in enumerate(self.amap.outputs):
+            ch = {"index": i}
+            self._stored_common(ch, spec, p)
+            if "delay" in spec:
+                raw = p.f32(spec["delay"])
+                if raw is not None:
+                    ch["delay"] = round(delay_ms_from_raw(raw, self.rate), 4)
+            if "invert" in spec:
+                raw = p.i32(spec["invert"])
+                if raw is not None:
+                    ch["invert"] = bool(raw)
+            groups = []
+            for gi, base in enumerate(spec.get("xover_groups", [])):
+                vals = p.floats(base, XOVER_SLOTS * BIQUAD_FLOATS)
+                group = describe_crossover_group(
+                    [as_biquad(vals[k * BIQUAD_FLOATS:(k + 1) * BIQUAD_FLOATS])
+                     for k in range(XOVER_SLOTS)], gi, self.rate)
+                bypassed = p.is_bypassed(base)
+                if bypassed is not None:
+                    group["bypass"] = bypassed
+                groups.append(group)
+            ch["crossover"] = groups
+            outs.append(ch)
+
+        return {"preset": p.index, "inputs": ins, "outputs": outs,
+                "source": "stored"}
+
+    def _stored_common(self, ch: dict[str, Any], spec: dict[str, Any],
+                       p: mf.StoredPreset) -> None:
+        """Gain, gate and PEQ, which inputs and outputs record the same way."""
+        if "gain" in spec:
+            g = p.f32(spec["gain"])
+            if g is not None:
+                ch["gain"] = round(g, 3)
+        if "enable" in spec:
+            raw = p.i32(spec["enable"])
+            if raw is not None:
+                _set_gate(ch, raw)
+        bands = []
+        for band, addr in enumerate(spec.get("peq", [])):
+            vals = p.floats(addr, BIQUAD_FLOATS)
+            entry = describe_peq_band(as_biquad(vals), band, self.rate)
+            bypassed = p.is_bypassed(addr)
+            if bypassed is not None:
+                entry["bypass"] = bypassed
+            bands.append(entry)
+        ch["peq"] = bands
 
     def read_all(self, n: int | None = None) -> list[dict[str, Any]]:
         total = len(self.amap.outputs)
