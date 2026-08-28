@@ -7,3 +7,9 @@ snapshots/
 build/
 dist/
 *.spec
+
+# Anything read off a particular unit: flash images, Device Console exports,
+# working projects. These carry a serial number and somebody's tuning, so
+# they stay out of the repository -- this is the folder to put them in, and
+# the folder the app points at.
+device/

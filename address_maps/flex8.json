@@ -2,7 +2,7 @@
   "device": "flex8",
   "internal_sampling_rate": 96000,
   "generated_from": "minidsp-rs protocol/src/device/flex8.rs",
-  "note": "Addresses are float indices, and a filter address is the base of a 5-float biquad block: the device aligns reads down to one, so an unaligned address returns the block containing it. peq lists run band 0 first, which is the *highest* address: the bands descend by 5. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`.",
+  "note": "Addresses are float indices, and a filter address is the base of a 5-float biquad block: the device aligns reads down to one, so an unaligned address returns the block containing it. peq lists run band 0 first, which is the *highest* address: the bands descend by 5. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`. compressor, FIR and mixer polarity addresses were taken from a Device Console export, which names every parameter; the minidsp-rs profiles these maps are generated from do not describe them.",
   "inputs": [
     {
       "gain": 68,
@@ -39,6 +39,21 @@
         5,
         6,
         7
+      ],
+      "fir": {
+        "enable": 67,
+        "taps": 71,
+        "coeffs": 72
+      },
+      "routing_polarity": [
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39
       ]
     },
     {
@@ -76,6 +91,21 @@
         13,
         14,
         15
+      ],
+      "fir": {
+        "enable": 2171,
+        "taps": 2175,
+        "coeffs": 2176
+      },
+      "routing_polarity": [
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47
       ]
     }
   ],
@@ -101,7 +131,16 @@
       "xover_groups": [
         4337,
         4357
-      ]
+      ],
+      "compressor": {
+        "enable": 4275,
+        "threshold": 4277,
+        "makeup": 4278,
+        "ratio": 4279,
+        "knee": 4280,
+        "attack": 4281,
+        "release": 4282
+      }
     },
     {
       "gain": 4379,
@@ -124,7 +163,16 @@
       "xover_groups": [
         4440,
         4460
-      ]
+      ],
+      "compressor": {
+        "enable": 4378,
+        "threshold": 4380,
+        "makeup": 4381,
+        "ratio": 4382,
+        "knee": 4383,
+        "attack": 4384,
+        "release": 4385
+      }
     },
     {
       "gain": 4482,
@@ -147,7 +195,16 @@
       "xover_groups": [
         4543,
         4563
-      ]
+      ],
+      "compressor": {
+        "enable": 4481,
+        "threshold": 4483,
+        "makeup": 4484,
+        "ratio": 4485,
+        "knee": 4486,
+        "attack": 4487,
+        "release": 4488
+      }
     },
     {
       "gain": 4585,
@@ -170,7 +227,16 @@
       "xover_groups": [
         4646,
         4666
-      ]
+      ],
+      "compressor": {
+        "enable": 4584,
+        "threshold": 4586,
+        "makeup": 4587,
+        "ratio": 4588,
+        "knee": 4589,
+        "attack": 4590,
+        "release": 4591
+      }
     },
     {
       "gain": 4688,
@@ -193,7 +259,16 @@
       "xover_groups": [
         4749,
         4769
-      ]
+      ],
+      "compressor": {
+        "enable": 4687,
+        "threshold": 4689,
+        "makeup": 4690,
+        "ratio": 4691,
+        "knee": 4692,
+        "attack": 4693,
+        "release": 4694
+      }
     },
     {
       "gain": 4791,
@@ -216,7 +291,16 @@
       "xover_groups": [
         4852,
         4872
-      ]
+      ],
+      "compressor": {
+        "enable": 4790,
+        "threshold": 4792,
+        "makeup": 4793,
+        "ratio": 4794,
+        "knee": 4795,
+        "attack": 4796,
+        "release": 4797
+      }
     },
     {
       "gain": 4894,
@@ -239,7 +323,16 @@
       "xover_groups": [
         4955,
         4975
-      ]
+      ],
+      "compressor": {
+        "enable": 4893,
+        "threshold": 4895,
+        "makeup": 4896,
+        "ratio": 4897,
+        "knee": 4898,
+        "attack": 4899,
+        "release": 4900
+      }
     },
     {
       "gain": 4997,
@@ -262,7 +355,16 @@
       "xover_groups": [
         5058,
         5078
-      ]
+      ],
+      "compressor": {
+        "enable": 4996,
+        "threshold": 4998,
+        "makeup": 4999,
+        "ratio": 5000,
+        "knee": 5001,
+        "attack": 5002,
+        "release": 5003
+      }
     }
   ]
 }
