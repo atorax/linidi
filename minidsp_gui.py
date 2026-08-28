@@ -168,6 +168,12 @@ QPushButton#danger[spent="true"] {{ color: {DANGER}; }}
 /* The two writes. Outlined rather than filled: both carry an indicator, and
    a solid fill fights the lamp for attention. Blue is the reversible one,
    orange the one that commits -- the same ranking used everywhere else. */
+QPushButton#rowReset {{ background: transparent; border: 1px solid {LINE};
+                        border-radius: 3px; padding: 0; }}
+QPushButton#rowReset:hover {{ background: {PANEL2}; border-color: {ACCENT}; }}
+QPushButton#resetAll {{ background: {PANEL2}; color: {ACCENT};
+                        border: 1px solid {ACCENT}; padding: 3px 10px; }}
+QPushButton#resetAll:hover {{ background: #2c313c; }}
 QPushButton#applyEdits {{ background: {PANEL2}; color: {FG};
                           border: 1px solid {ACCENT}; font-weight: 600;
                           padding: 5px 12px; }}
@@ -252,6 +258,44 @@ def help_icon(size: int = 18, colour: str = MUTED) -> QIcon:
     p.drawText(pm.rect(), Qt.AlignCenter, "?")
     p.end()
     return QIcon(pm)
+
+
+def reset_icon(size: int = 14, colour: str = ACCENT) -> QIcon:
+    """A circular arrow, painted so it does not depend on a glyph font.
+
+    Blue: undoing an edit is a secondary action, not the destructive red of
+    a mute or the orange of the thing that writes to the device.
+    """
+    pm = QPixmap(size * 4, size * 4)          # drawn large, scaled down
+    pm.fill(Qt.transparent)
+    n = size * 4
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(colour))
+    pen.setWidthF(n * 0.11)
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    inset = n * 0.20
+    box = QRectF(inset, inset, n - 2 * inset, n - 2 * inset)
+    # An arc with a gap at the top right, and an arrowhead closing it.
+    p.drawArc(box, int(60 * 16), int(280 * 16))
+    tip_r = box.width() / 2.0
+    cx, cy = box.center().x(), box.center().y()
+    ang = math.radians(60.0)
+    tx, ty = cx + tip_r * math.cos(ang), cy - tip_r * math.sin(ang)
+    head = n * 0.20
+    path = QPainterPath()
+    path.moveTo(tx - head * 0.1, ty - head)
+    path.lineTo(tx + head * 0.85, ty + head * 0.15)
+    path.lineTo(tx - head * 0.75, ty + head * 0.5)
+    path.closeSubpath()
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(colour))
+    p.drawPath(path)
+    p.end()
+    return QIcon(pm.scaled(size, size, Qt.KeepAspectRatio,
+                           Qt.SmoothTransformation))
 
 
 def doc_sections() -> list[tuple[str, str]]:
@@ -1141,8 +1185,9 @@ class PeqTable(QTableWidget):
     """Editor for a channel's PEQ bank."""
 
     changed = Signal()
-    COLS = ["#", "On", "Type", "Freq (Hz)", "Q", "Gain (dB)", "Source"]
-    C_NUM, C_ON, C_TYPE, C_FREQ, C_Q, C_GAIN, C_SRC = range(len(COLS))
+    COLS = ["#", "On", "Type", "Freq (Hz)", "Q", "Gain (dB)", "Source", ""]
+    (C_NUM, C_ON, C_TYPE, C_FREQ, C_Q, C_GAIN, C_SRC,
+     C_RESET) = range(len(COLS))
 
     def __init__(self):
         super().__init__(0, len(self.COLS))
@@ -1154,6 +1199,8 @@ class PeqTable(QTableWidget):
         header.setSectionResizeMode(self.C_NUM, QHeaderView.Fixed)
         header.setMinimumSectionSize(26)   # else the header sets a floor
         self.setColumnWidth(self.C_NUM, 34)
+        header.setSectionResizeMode(self.C_RESET, QHeaderView.Fixed)
+        self.setColumnWidth(self.C_RESET, 30)
         self.setSelectionMode(QTableWidget.NoSelection)
         self.bands: list[dict[str, Any]] = []
         self.rate = 96000            # set from the project by ChannelEditor
@@ -1216,7 +1263,36 @@ class PeqTable(QTableWidget):
                 self.setCellWidget(r, col, sb)
 
             self.setItem(r, self.C_SRC, provenance_item(b))
+
+            rb = QPushButton()
+            rb.setObjectName("rowReset")
+            rb.setIcon(reset_icon(13))
+            rb.setIconSize(QSize(13, 13))
+            rb.setFixedSize(24, 20)
+            rb.setCursor(Qt.PointingHandCursor)
+            rb.setToolTip(
+                f"Put band {idx} back to its starting point: "
+                f"{core.stock_peq_freqs(len(bands))[r]:g} Hz, no boost or "
+                f"cut, and switched off")
+            rb.clicked.connect(lambda _c=False, row=r: self.reset_row(row))
+            self.setCellWidget(r, self.C_RESET, rb)
+
         self._loading = False
+
+    def reset_row(self, row: int):
+        """One band back to stock."""
+        if not 0 <= row < len(self.bands):
+            return
+        core.reset_peq_band(self.bands[row], len(self.bands))
+        self.load(self.bands)
+        self.changed.emit()
+
+    def reset_all(self):
+        """Every band back to stock, spread across the range."""
+        for b in self.bands:
+            core.reset_peq_band(b, len(self.bands))
+        self.load(self.bands)
+        self.changed.emit()
 
     def refresh_values(self):
         """Push the bands' numbers into the spin boxes, nothing else.
@@ -1794,7 +1870,23 @@ class ChannelEditor(QWidget):
         pl = QVBoxLayout(peq_box)
         self.peq_tabs = TabStrip(["Parametric EQ", "Biquad"])
         self.peq_tabs.selected.connect(self._show_peq_tab)
-        pl.addWidget(self.peq_tabs)
+        # The tab strip already ends in a stretch, so the reset sits at the
+        # far right of the same row rather than taking a row of its own.
+        self.reset_all_btn = QPushButton("  Reset all bands")
+        self.reset_all_btn.setObjectName("resetAll")
+        self.reset_all_btn.setIcon(reset_icon(13))
+        self.reset_all_btn.setIconSize(QSize(13, 13))
+        self.reset_all_btn.setCursor(Qt.PointingHandCursor)
+        self.reset_all_btn.setToolTip(
+            "Put every band back to its starting point: spread across the "
+            "range, no boost or cut, all switched off")
+        self.reset_all_btn.clicked.connect(self._on_reset_all)
+        tabs_row = QWidget()
+        trl = QHBoxLayout(tabs_row)
+        trl.setContentsMargins(0, 0, 0, 0)
+        trl.addWidget(self.peq_tabs, 1)
+        trl.addWidget(self.reset_all_btn)
+        pl.addWidget(tabs_row)
 
         self.peq = PeqTable()
         self.peq.changed.connect(self._emit)
@@ -1835,6 +1927,38 @@ class ChannelEditor(QWidget):
         self._update_chain()
         self._loading = False
         self.refresh_plot()
+
+    def _on_reset_all(self):
+        """Every band in this channel's bank back to stock.
+
+        Asked first: this throws away the whole bank, and on a channel read
+        from the device that is a tuning somebody made.
+        """
+        if self.chan is None:
+            return
+        bands = self.chan.get("peq", [])
+        touched = [b for b in bands
+                   if b.get("enabled") or b.get("manual")
+                   or abs(float(b.get("gain") or 0.0)) > 1e-9]
+        if touched:
+            resp = QMessageBox.question(
+                self, "Reset all bands?",
+                f"{len(touched)} of {len(bands)} bands on "
+                f"{self.chan.get('name', 'this channel')} are in use.\n\n"
+                "Resetting spreads every band back across the range at no "
+                "boost or cut and switches them all off. The device is not "
+                "written until you save.",
+                QMessageBox.Reset | QMessageBox.Cancel, QMessageBox.Cancel)
+            if resp != QMessageBox.Reset:
+                return
+        table = self._active_peq()
+        if hasattr(table, "reset_all"):
+            table.reset_all()
+        else:
+            for b in bands:
+                core.reset_peq_band(b, len(bands))
+            table.load(bands)
+            self._emit()
 
     def _on_band_dragged(self, index: int, fields: dict):
         """A band was dragged or scrolled on the plot.

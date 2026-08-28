@@ -891,10 +891,74 @@ class Readback:
 # Project model -> coefficients
 # ---------------------------------------------------------------------------
 
-def default_peq_band(index: int) -> dict[str, Any]:
+# The ISO 1/1-octave centre frequencies. Ten of them span 31.5 Hz to 16 kHz,
+# which is the layout of every ten-band equaliser ever built, so the numbers
+# are ones people already recognise.
+ISO_OCTAVE_CENTRES = (16.0, 31.5, 63.0, 125.0, 250.0, 500.0, 1000.0,
+                      2000.0, 4000.0, 8000.0, 16000.0)
+
+
+def stock_peq_freqs(count: int) -> list[float]:
+    """Evenly spaced starting points for a bank of `count` bands.
+
+    Spread evenly in log frequency between 31.5 Hz and 16 kHz, then snapped
+    to an ISO centre wherever one is within a few percent. For the usual ten
+    that lands exactly on 31.5 / 63 / 125 ... 16k; for any other count it
+    degrades to plain log spacing rather than to a table that does not fit.
+
+    All ten bands defaulting to 1 kHz was the alternative, and it meant
+    switching a second band on stacked it invisibly on the first.
+    """
+    if count <= 0:
+        return []
+    if count == 1:
+        return [1000.0]
+    lo, hi = 31.5, 16000.0
+    ratio = (hi / lo) ** (1.0 / (count - 1))
+    out = []
+    for k in range(count):
+        f = lo * ratio ** k
+        near = min(ISO_OCTAVE_CENTRES, key=lambda c: abs(math.log(c / f)))
+        out.append(near if abs(math.log(near / f)) < 0.03 else round(f, 1))
+    return out
+
+
+def stock_peq_q(count: int) -> float:
+    """A Q that makes `count` bands tile the range they are spread over.
+
+    A peaking filter is N octaves wide at Q = sqrt(2**N) / (2**N - 1), so
+    octave spacing wants Q 1.41 rather than the 1.0 this used to default to,
+    which is nearer an octave and a half and overlaps its neighbours.
+    """
+    if count < 2:
+        return 1.41
+    ratio = (16000.0 / 31.5) ** (1.0 / (count - 1))
+    n = math.log2(ratio)
+    return round(math.sqrt(2 ** n) / (2 ** n - 1), 3)
+
+
+def default_peq_band(index: int, count: int = 10) -> dict[str, Any]:
+    freqs = stock_peq_freqs(count)
     return {"index": index, "enabled": False, "type": "peaking",
-            "freq": 1000.0, "q": 1.0, "gain": 0.0, "manual": None,
+            "freq": freqs[index] if index < len(freqs) else 1000.0,
+            "q": stock_peq_q(count), "gain": 0.0, "manual": None,
             "bypass_source": "default"}
+
+
+def reset_peq_band(band: dict[str, Any], count: int = 10) -> None:
+    """Put one band back to its starting point, in place.
+
+    Left switched off, which is what the stock band is. A reset that also
+    put the band into circuit would be switching a filter on by itself, and
+    on an active crossover nothing should do that except somebody deciding
+    to. It costs one click to enable, and the band contributes nothing
+    either way until it is.
+    """
+    stock = default_peq_band(band.get("index", 0), count)
+    band.update(stock)
+    # Not "default": somebody chose this, and the difference matters to the
+    # warning about filters whose state is unknown.
+    band["bypass_source"] = "user"
 
 
 def default_crossover_group(index: int, mode: str) -> dict[str, Any]:
@@ -906,7 +970,7 @@ def default_crossover_group(index: int, mode: str) -> dict[str, Any]:
 def default_output(index: int, n_peq: int) -> dict[str, Any]:
     return {"index": index, "name": f"Out {index + 1}", "gain": 0.0,
             "mute": False, "invert": False, "delay": 0.0,
-            "peq": [default_peq_band(i) for i in range(n_peq)],
+            "peq": [default_peq_band(i, n_peq) for i in range(n_peq)],
             "crossover": [default_crossover_group(0, "highpass"),
                           default_crossover_group(1, "lowpass")]}
 
@@ -914,7 +978,7 @@ def default_output(index: int, n_peq: int) -> dict[str, Any]:
 def default_input(index: int, n_out: int, n_peq: int) -> dict[str, Any]:
     return {"index": index, "name": f"In {index + 1}", "gain": 0.0,
             "mute": False,
-            "peq": [default_peq_band(i) for i in range(n_peq)],
+            "peq": [default_peq_band(i, n_peq) for i in range(n_peq)],
             "routing": [{"index": o, "enabled": o == index, "gain": 0.0}
                         for o in range(n_out)]}
 
