@@ -544,9 +544,10 @@ class MeterBar(QWidget):
         now = time.monotonic()
         if db > self.peak or now - self._peak_at > self.PEAK_HOLD_SEC:
             self.peak, self._peak_at = db, now
-        # Driven by the poll for now. If a repaint timer is added later for
-        # smoother release, call animate() from that instead and drop this.
-        self.animate()
+        # Ballistics are advanced by the window's animation timer, not here.
+        # Driving them from the sample meant the release only moved when a
+        # sample arrived, so a 90 dB/s decay rendered at the poll rate and
+        # the bar stepped instead of falling.
 
     def animate(self):
         """Advance ballistics one frame."""
@@ -2439,8 +2440,23 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
 
+        # Three rates, because three things change at three speeds.
+        #
+        # The bars are redrawn at screen rate so their decay actually
+        # animates. That is what made them look choppy: the ballistics were
+        # only advanced when a sample arrived, so a 90 dB/s release rendered
+        # at two frames a second. Repainting costs no USB traffic at all.
+        #
+        # Levels are sampled often, which is affordable because the meters
+        # are contiguous and cost two reads. The master block -- preset,
+        # source, volume, mute -- changes when somebody touches something,
+        # so it stays slow.
         self.poll = QTimer(self)
         self.poll.timeout.connect(self.tick)
+        self.meter_poll = QTimer(self)
+        self.meter_poll.timeout.connect(self.tick_meters)
+        self.meter_anim = QTimer(self)
+        self.meter_anim.timeout.connect(self.tick_animate)
         self.connect_device()
 
     # ---- setup ----
@@ -2523,6 +2539,12 @@ class MainWindow(QMainWindow):
         self.chan_list.setCurrentRow(1)
         self.update_warning()
         self.poll.start(500)
+        # Only the direct-USB path can read meters on their own; over the
+        # daemon they arrive with the status block, so the fast timer would
+        # have nothing cheap to ask for.
+        if hasattr(self.daemon, "meters"):
+            self.meter_poll.start(60)
+        self.meter_anim.start(16)
         self.statusBar().showMessage(
             f"Connected to {name} over {self.transport}", 4000)
 
@@ -2797,15 +2819,44 @@ class MainWindow(QMainWindow):
             self.warn_label.setStyleSheet(f"color: {MUTED};")
 
     def tick(self):
+        """The slow poll: master state, and levels only if nothing faster is
+        supplying them."""
         try:
             status = self.daemon.status()
-        except core.DeviceError:
+        except Exception:                                  # noqa: BLE001
+            # Includes a protocol timeout, which the device
+            # produces whenever it is busy. Not worth a dialog.
             return
         self.master.update_status(status)
+        if self.meter_poll.isActive():
+            return
         for m, v in zip(self.in_meters, status.get("input_levels", [])):
             m.set_value(v)
         for m, v in zip(self.out_meters, status.get("output_levels", [])):
             m.set_value(v)
+
+    def tick_meters(self):
+        """The fast poll: levels only. Two reads, whatever the channel count.
+
+        A failure here is ignored rather than reported: this runs many times
+        a second, and the device is busy during an apply or a save, so a
+        missed sample is normal and a dialog about it would be intolerable.
+        """
+        try:
+            ins, outs = self.daemon.meters()
+        except Exception:                                  # noqa: BLE001
+            return
+        for m, v in zip(self.in_meters, ins):
+            m.set_value(v)
+        for m, v in zip(self.out_meters, outs):
+            m.set_value(v)
+
+    def tick_animate(self):
+        """Advance every bar's ballistics one frame. No device access."""
+        for m in self.in_meters:
+            m.animate()
+        for m in self.out_meters:
+            m.animate()
 
     def on_master_change(self, payload):
         self.tasks.run(

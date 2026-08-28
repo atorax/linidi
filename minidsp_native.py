@@ -139,15 +139,50 @@ class NativeDevice:
             out.extend(self._dev.read_floats(addr + len(out), n))
         return out
 
+    def _meter_spans(self, specs: list[dict[str, Any]]
+                     ) -> list[tuple[int, int]]:
+        """Meter addresses grouped into consecutive runs.
+
+        They are laid out contiguously on every map seen so far -- a Flex 8
+        keeps its two input meters at 48-49 and its eight output meters at
+        58-65 -- so the whole set costs two reads rather than ten. That is
+        what makes polling them often enough to look like a meter affordable.
+        Falls back to one read per meter if a map ever scatters them.
+        """
+        addrs = sorted(a for a in (s.get("meter") for s in specs)
+                       if a is not None)
+        spans: list[tuple[int, int]] = []
+        for a in addrs:
+            if spans and a == spans[-1][1] + 1 and \
+                    (spans[-1][1] - spans[-1][0] + 1) < MAX_FLOATS_PER_READ:
+                spans[-1] = (spans[-1][0], a)
+            else:
+                spans.append((a, a))
+        return spans
+
+    def _read_meters(self) -> tuple[list[float], list[float]]:
+        """Both meter banks, caller holds the lock."""
+        out = []
+        for specs in (self.amap.inputs, self.amap.outputs):
+            vals: list[float] = []
+            for lo, hi in self._meter_spans(specs):
+                vals.extend(self._dev.read_floats(lo, hi - lo + 1))
+            out.append(vals)
+        return out[0], out[1]
+
+    def meters(self) -> tuple[list[float], list[float]]:
+        """Input and output levels, and nothing else.
+
+        Separate from status() so the bars can be polled quickly without
+        re-reading the master block, which changes far more slowly.
+        """
+        with self._lock:
+            return self._read_meters()
+
     def status(self) -> dict[str, Any]:
         with self._lock:
             m = self._dev.master_status()
-            ins = [self._dev.read_floats(a, 1)[0]
-                   for a in (s.get("meter") for s in self.amap.inputs)
-                   if a is not None]
-            outs = [self._dev.read_floats(a, 1)[0]
-                    for a in (s.get("meter") for s in self.amap.outputs)
-                    if a is not None]
+            ins, outs = self._read_meters()
         src = m["source"]
         return {
             "master": {
