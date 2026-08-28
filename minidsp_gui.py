@@ -2293,8 +2293,8 @@ class MainWindow(QMainWindow):
         # false because nothing is known before a read, and a lamp that
         # claims "stored" without having looked is worse than no lamp.
         self.stored_current = False
-        # The last read's verdict on whether running and stored agreed:
-        # True, False, or None for "nothing comparable".
+        # The last read's comparison of running against stored: what was
+        # compared, what could not be, and what differed. None before a read.
         self._live_vs_stored = None
         # True while a write is in flight. Both writes share the one command
         # endpoint, and update_warning() runs from several places, so the
@@ -2732,25 +2732,45 @@ class MainWindow(QMainWindow):
     def _update_leds(self) -> None:
         """The two lamps: is it running, and is it stored.
 
-        Green means the device agrees with the project; red means it does
-        not, and says which half. The pair only ever fills in left to right --
-        storing implies applying -- so "green, red" is the ordinary state
-        while tuning and "green, green" means there is nothing outstanding.
+        Green means the device agrees with the project. Amber means work
+        outstanding -- deliberately not red, which is reserved here for
+        things that can damage a driver. Amber also differs from green in
+        brightness as well as hue, so the pair survives colour blindness,
+        and neither lamp is the only place its state is written: the label
+        beside them says the same thing in words.
+
+        They fill in left to right, because storing implies applying.
         """
         applied = bool(self.have_read) and not self.dirty
         stored = applied and bool(self.stored_current)
-        self.apply_btn.setIcon(led_icon(10, OK if applied else DANGER))
-        self.save_device_btn.setIcon(led_icon(10, OK if stored else DANGER))
+        self.apply_btn.setIcon(led_icon(10, OK if applied else WARN))
+        self.save_device_btn.setIcon(led_icon(10, OK if stored else WARN))
+
+        cmp_ = self._live_vs_stored or {}
+        unread = cmp_.get("unreadable", 0)
+        caveat = (f"\nCompared {cmp_.get('compared', 0)} parameters; "
+                  f"{unread} filters cannot be read back and are taken from "
+                  f"the stored preset." if cmp_ else "")
         self.apply_btn.setToolTip(
-            "The device is running these edits. A power cycle undoes it."
-            if applied else
-            "Edits are not on the device yet. Click to hear them; a power "
-            "cycle undoes it.")
-        self.save_device_btn.setToolTip(
-            "Stored: this is what the device loads at power-on."
-            if stored else
-            "Not stored. The device would come back to something else after "
-            "a power cycle. There is no undo once stored.")
+            ("The device is running these edits. A power cycle undoes it."
+             if applied else
+             "Edits are not on the device yet. Click to hear them; a power "
+             "cycle undoes it.") + caveat)
+
+        if stored:
+            tip = "Stored: this is what the device loads at power-on."
+        else:
+            diffs = cmp_.get("differences") or []
+            detail = ""
+            if diffs and not self.dirty:
+                detail = ("\n\nWhat is running differs from what is "
+                          "stored:\n  " + "\n  ".join(diffs[:6]))
+                if len(diffs) > 6:
+                    detail += f"\n  ... and {len(diffs) - 6} more"
+            tip = ("Not stored. The device would come back to something else "
+                   "after a power cycle. There is no undo once stored."
+                   + detail)
+        self.save_device_btn.setToolTip(tip)
 
     def update_warning(self):
         unknown = core.unknown_bypass(self.project) if self.project else []
@@ -2876,11 +2896,12 @@ class MainWindow(QMainWindow):
             self._last_stored = core.apply_stored_preset(self.project, stored)
             # Whether the device is running what it would come back as. A
             # disagreement means someone applied without saving -- possibly
-            # this app, on an earlier run -- and the lamp should say so.
-            agrees = core.live_matches_stored(readings, input_readings,
-                                              stored)
-            self.stored_current = agrees is True
-            self._live_vs_stored = agrees
+            # this app, on an earlier run -- and the lamp should say so, and
+            # say which parameters.
+            cmp_ = core.compare_live_stored(readings, input_readings, stored)
+            self._live_vs_stored = cmp_
+            self.stored_current = (cmp_["compared"] > 0
+                                   and not cmp_["differences"])
         if cfg is not None:
             try:
                 parsed = core.parse_device_console_xml(
@@ -2913,9 +2934,13 @@ class MainWindow(QMainWindow):
             msg += (f"  -  PEQ, routing and bypass read from the device's "
                     f"stored preset: {s['peq']} bands, {s['routing']} mixer "
                     f"cells, {s['bypassed']} bypassed")
-            if self._live_vs_stored is False:
-                msg += ("  -  what it is running differs from what it has "
-                        "stored, so a power cycle would change it")
+            diffs = (self._live_vs_stored or {}).get("differences") or []
+            if diffs:
+                msg += (f"  -  {len(diffs)} parameter(s) differ between what "
+                        f"it is running and what it has stored, so a power "
+                        f"cycle would change it: {diffs[0]}"
+                        + (f" (+{len(diffs) - 1} more)"
+                           if len(diffs) > 1 else ""))
         elif self._last_config is not None:
             msg += (f"  -  the stored preset could not be read, so PEQ, "
                     f"routing and bypass came from "

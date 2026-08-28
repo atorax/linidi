@@ -1314,24 +1314,27 @@ def _apply_stored_bands(dst_bands: list[dict[str, Any]],
             dst["manual"] = None
 
 
-def live_matches_stored(readings: list[dict[str, Any]],
+def compare_live_stored(readings: list[dict[str, Any]],
                         inputs: list[dict[str, Any]],
-                        cfg: dict[str, Any]) -> bool | None:
-    """Whether the running parameters agree with the stored preset.
+                        cfg: dict[str, Any]) -> dict[str, Any]:
+    """How the running parameters differ from the stored preset.
 
     Only the fields the hardware actually reports can be compared -- gain,
     delay, polarity and the channel gates. Coefficients cannot, because they
-    do not read back, so a disagreement in a filter is invisible here and
-    this answers "no reason to think otherwise" rather than "identical".
+    do not read back, so a filter that was changed live and not stored is
+    invisible here. "Agrees" therefore means no reason to think otherwise,
+    not proof of identity, and `unreadable` says how much was out of reach.
 
-    That is still worth having: a device that has been applied to but not
-    saved shows up immediately, which is exactly the state that is otherwise
-    silent until the next power cycle. None means there was nothing to
-    compare.
+    It is still the difference between a silent surprise and a visible one:
+    a device that has been applied to but not saved shows up the moment it is
+    read, rather than the next time it is powered on.
+
+    Returns {compared, unreadable, differences: [text, ...]}. Callers treat
+    an empty `differences` with `compared` of zero as "nothing to say".
     """
     stored_out = {c["index"]: c for c in cfg.get("outputs", [])}
     stored_in = {c["index"]: c for c in cfg.get("inputs", [])}
-    compared = 0
+    out: dict[str, Any] = {"compared": 0, "unreadable": 0, "differences": []}
 
     def same(a: Any, b: Any, tol: float) -> bool:
         if isinstance(a, bool) or isinstance(b, bool):
@@ -1341,20 +1344,32 @@ def live_matches_stored(readings: list[dict[str, Any]],
         except (TypeError, ValueError):
             return a == b
 
-    for live, stored, fields in (
-            (readings, stored_out,
+    def show(v: Any) -> str:
+        if isinstance(v, bool):
+            return "on" if v else "off"
+        try:
+            return f"{float(v):g}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    for live, stored, label, fields in (
+            (readings, stored_out, "out",
              (("gain", 0.02), ("delay", 0.002), ("mute", 0), ("invert", 0))),
-            (inputs, stored_in, (("gain", 0.02), ("mute", 0)))):
+            (inputs, stored_in, "in", (("gain", 0.02), ("mute", 0)))):
         for r in live:
             s = stored.get(r.get("index"))
             if not s:
                 continue
             for key, tol in fields:
-                if key in r and key in s:
-                    compared += 1
-                    if not same(r[key], s[key], tol):
-                        return False
-    return None if not compared else True
+                if key not in r or key not in s:
+                    continue
+                out["compared"] += 1
+                if not same(r[key], s[key], tol):
+                    out["differences"].append(
+                        f"{label} {r['index'] + 1} {key}: "
+                        f"running {show(r[key])}, stored {show(s[key])}")
+            out["unreadable"] += len(s.get("peq", []))
+    return out
 
 
 def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
