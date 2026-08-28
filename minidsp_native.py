@@ -59,7 +59,7 @@ SOURCES = ["analog", "toslink", "spdif", "usb", "bluetooth"]
 
 
 def open_device(map_name: str | None = None, product_id: int | None = None,
-                timeout_ms: int = 1000) -> "NativeDevice":
+                timeout_ms: int = 2000) -> "NativeDevice":
     """Open whichever miniDSP is attached and load its address map.
 
     Identification comes from the hardware itself, so no daemon is involved.
@@ -95,7 +95,7 @@ class NativeDevice:
     """
 
     def __init__(self, amap: AddressMap, product_id: int | None = None,
-                 timeout_ms: int = 1000,
+                 timeout_ms: int = 2000,
                  connection: "mp.MiniDSP | None" = None,
                  info: "mp.DeviceInfo | None" = None):
         self.amap = amap

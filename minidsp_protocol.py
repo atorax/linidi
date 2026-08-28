@@ -26,10 +26,11 @@ Device Console's own wrapper calls 0x80 "withSave" and 0xa0 is the default it
 never uses. It does not persist a configuration this way at all: to save, it
 builds the whole preset image and writes it as flash blocks, then verifies.
 
-So a write here changes what the device is doing now, and nothing in this app
-writes the preset store. See the note on persistence in the README: whether
-these settings survive a power cycle has not been measured, and the safe
-assumption is that they do not.
+So a parameter write changes what the device is doing now and leaves the
+stored preset alone. That is measured, not assumed: after writing -7.18 dB
+the running parameter reads -7.18 and the stored one still reads -7.0. To
+make a setting outlive a power cycle it has to go into the preset blocks,
+which is what save_stored_preset() does.
 
 Attribution
 -----------
@@ -134,7 +135,13 @@ READ_ECHO_BYTES = {
 # How long to wait for a write to be acknowledged, and how many unacknowledged
 # writes in a row mean the device has stopped listening rather than merely
 # being slow.
-ACK_TIMEOUT_MS = 200
+#
+# Two seconds because this device is unhurried about several operations -- a
+# master mute is the obvious one -- and the cost of waiting is paid only when
+# an ack is genuinely late, while the cost of not waiting is counting a slow
+# reply as a lost one. Eight of those in a row used to raise "the device
+# stopped acknowledging writes" at a device that was working perfectly.
+ACK_TIMEOUT_MS = 2000
 
 # The device serves at most this many floats in one reply.
 MAX_FLOATS_PER_READ = 14
@@ -272,7 +279,7 @@ class LibUsbTransport:
     on the way out.
     """
 
-    def __init__(self, product_id: int | None = None, timeout_ms: int = 1000):
+    def __init__(self, product_id: int | None = None, timeout_ms: int = 2000):
         if usb is None:
             raise ProtocolError("pyusb is not installed")
         kwargs = {"idVendor": VENDOR_ID}
@@ -332,7 +339,17 @@ class LibUsbTransport:
         # `is None` rather than `or`: a caller asking for a 0 ms read means
         # "do not block", and `or` would quietly give it the full default.
         wait = self.timeout_ms if timeout_ms is None else timeout_ms
-        return bytes(self.ep_in.read(REPORT_LEN, wait))
+        try:
+            return bytes(self.ep_in.read(REPORT_LEN, wait))
+        except usb.core.USBTimeoutError:
+            # Nothing arrived in time. That is what an empty read means here,
+            # and it is what the hidraw transport already returns, so the
+            # layers above can retry rather than see an exception from a
+            # library they know nothing about. Letting it escape meant a slow
+            # reply bypassed every retry in exchange() and surfaced as a raw
+            # usb error -- which is what a master mute did, the device taking
+            # its time over that one and several others.
+            return b""
 
     def close(self) -> None:
         try:
@@ -348,7 +365,7 @@ class LibUsbTransport:
 class HidRawTransport:
     """Raw HID through hidapi, when a hidraw node exists."""
 
-    def __init__(self, path: bytes | None = None, timeout_ms: int = 1000):
+    def __init__(self, path: bytes | None = None, timeout_ms: int = 2000):
         if hid is None:
             raise ProtocolError("python-hidapi is not installed")
         if path is None:
@@ -382,7 +399,7 @@ class MiniDSP:
     """A direct connection to one device."""
 
     def __init__(self, transport=None, product_id: int | None = None,
-                 timeout_ms: int = 1000):
+                 timeout_ms: int = 2000):
         if transport is None:
             try:
                 transport = LibUsbTransport(product_id, timeout_ms)

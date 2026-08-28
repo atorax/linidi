@@ -3240,8 +3240,10 @@ def main() -> int:
                          "not found automatically")
     ap.add_argument("--map", default=None,
                     help="address map name to use, if auto-detection fails")
-    ap.add_argument("--timeout", type=int, default=1000,
-                    help="USB command timeout in milliseconds")
+    ap.add_argument("--timeout", type=int, default=2000,
+                    help="USB command timeout in milliseconds; the device is "
+                         "unhurried about some operations and a short one "
+                         "reads a slow reply as a lost one")
     ap.add_argument("--rate", type=int, default=96000,
                     help="fallback DSP rate if no address map is available")
     ap.add_argument("--peq", type=int, default=10,
