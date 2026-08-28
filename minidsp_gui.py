@@ -2283,7 +2283,6 @@ class MainWindow(QMainWindow):
         self.have_read = False
         self._name_col = 36
         self._topology_dsp: int | None = None
-        self._last_config = None
         self._last_stored = None
         # The stored-preset warning is shown once per session, not on every
         # write: the button says what it does, and a modal on every press
@@ -2837,10 +2836,9 @@ class MainWindow(QMainWindow):
         if self.readback is None:
             return
         self.read_btn.setEnabled(False)
-        self.statusBar().showMessage("Reading coefficients from device...")
+        self.statusBar().showMessage("Reading from device...")
         n_out = len(self.project["outputs"])
         n_in = len(self.project["inputs"])
-        serial = getattr(getattr(self.daemon, "info", None), "serial", None)
         preset = 0
         try:
             preset = int(self.daemon.status()["master"].get("preset", 0))
@@ -2859,35 +2857,25 @@ class MainWindow(QMainWindow):
         def work():
             outs = self.readback.read_all(n_out)
             ins = self.readback.read_inputs(n_in)
-            # Filter memory, bypass flags and mixer gates do not answer a
-            # parameter read, but they are all in the stored preset, so read
-            # that out of the device rather than reaching for a file.
+            # PEQ coefficients, mixer gates and bypass flags do not answer a
+            # parameter read. They are in the stored preset, which is also
+            # the device, so a read is answered entirely by the hardware.
+            # Nothing here falls back to a settings file: a value on screen
+            # after a read came from the device or it is not there at all.
             stored = stored_error = None
             if native is not None:
                 try:
                     stored = native.stored_config(preset)
                 except Exception as exc:               # noqa: BLE001
                     stored_error = str(exc)
-            # A settings file is the fallback for when that is unavailable:
-            # a device whose flash holds no preset we recognise, or a
-            # connection that cannot make raw flash reads at all.
-            cfg = None
-            if stored is None:
-                for d in core.find_console_settings(serial,
-                                                    self.opts.console_dir):
-                    f = core.console_setting_file(d, preset)
-                    if f:
-                        cfg = f
-                        break
-            return outs, ins, stored, stored_error, cfg
+            return outs, ins, stored, stored_error
 
         self.tasks.run(work, on_done=self._read_done,
                        on_error=self._read_failed)
 
     def _read_done(self, result):
-        readings, input_readings, stored, stored_error, cfg = result
+        readings, input_readings, stored, stored_error = result
         core.apply_readback(self.project, readings, input_readings)
-        self._last_config = None
         self._last_stored = None
         if stored is not None:
             # Applied after the live readings, deliberately: it supplies the
@@ -2902,16 +2890,7 @@ class MainWindow(QMainWindow):
             self._live_vs_stored = cmp_
             self.stored_current = (cmp_["compared"] > 0
                                    and not cmp_["differences"])
-        if cfg is not None:
-            try:
-                parsed = core.parse_device_console_xml(
-                    cfg.read_text(encoding="utf-8", errors="replace"))
-                core.apply_device_console_xml(self.project, parsed, self.amap)
-                self._last_config = cfg
-            except Exception as exc:                       # noqa: BLE001
-                self.statusBar().showMessage(
-                    f"could not read {cfg.name}: {exc}", 8000)
-        elif stored_error:
+        if stored_error:
             self.statusBar().showMessage(
                 f"could not read the stored preset: {stored_error}", 8000)
         self.have_read = True
@@ -2941,15 +2920,10 @@ class MainWindow(QMainWindow):
                         f"cycle would change it: {diffs[0]}"
                         + (f" (+{len(diffs) - 1} more)"
                            if len(diffs) > 1 else ""))
-        elif self._last_config is not None:
-            msg += (f"  -  the stored preset could not be read, so PEQ, "
-                    f"routing and bypass came from "
-                    f"{self._last_config.name}")
         elif unread:
-            msg += (f"  -  {unread} PEQ bands unavailable: filter memory "
-                    "does not answer a parameter read, no preset was found "
-                    "in this device's flash, and there is no Device Console "
-                    "settings file. Use Import XML.")
+            msg += (f"  -  {unread} PEQ bands unavailable: they do not "
+                    "answer a parameter read and no preset was found in this "
+                    "device's flash. Import XML can load them from a file.")
         self.statusBar().showMessage(msg, 15000)
 
     def _read_failed(self, msg):
