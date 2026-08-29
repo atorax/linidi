@@ -4094,12 +4094,15 @@ class MainWindow(QMainWindow):
                 for out in payload.get("outputs", []):
                     if out.get("index") == idx:
                         out["gain"] = request
-            return native.save_stored_preset(payload)
+            return native.save_stored_preset(
+                payload,
+                progress=lambda d, t: self.read_progress.emit(d, t))
 
         self.tasks.run(work, on_done=self._save_device_done,
                        on_error=self._write_failed)
 
     def _save_device_done(self, stats):
+        self.progress.hide()
         self._set_writing(False)
         self.dirty = False
         self.stored_current = True
@@ -4112,6 +4115,7 @@ class MainWindow(QMainWindow):
             15000)
 
     def _write_failed(self, msg):
+        self.progress.hide()
         self._set_writing(False)
         self.update_warning()
         self.statusBar().showMessage(f"Write failed: {msg}", 10000)

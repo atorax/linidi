@@ -513,6 +513,28 @@ class NativeDevice:
                 for route in inp.get("routing", []):
                     self._set_route(inp["index"], route)
 
+    @staticmethod
+    def _phases(cb: Any, count: int, each: int):
+        """Turn several byte-counted round trips into one progress line.
+
+        Storing is three trips over the wire -- read what is there, write
+        the edited image, read it back to check it -- and each one counts
+        its own bytes from zero. Reported raw, the bar would fill and
+        restart three times, which reads as three failures rather than one
+        operation. This gives each phase its own band of a single total.
+        """
+        state = {"i": 0}
+
+        def phase():
+            base = state["i"] * each
+            state["i"] += 1
+
+            def report(done: int, _total: int) -> None:
+                if cb is not None:
+                    cb(min(base + done, count * each), count * each)
+            return report
+        return phase
+
     def save_stored_preset(self, payload: dict[str, Any],
                            progress: Any = None) -> dict[str, int]:
         """Write a project into the device's stored preset, and check it.
@@ -542,7 +564,8 @@ class NativeDevice:
                 f"the device reports preset {active}, but {len(slots)} "
                 f"preset slots were found in its flash")
         slot = slots[active]
-        stored = self.read_stored_preset(active)
+        phase = self._phases(progress, 3, slot.vals.payload_len)
+        stored = self.read_stored_preset(active, progress=phase())
 
         words, flags = self._preset_changes(payload)
         values = mf.replace_words(stored.values, words)
@@ -550,8 +573,8 @@ class NativeDevice:
                   if flags and stored.bypass_raw else None)
 
         with self._lock:
-            mf.save_preset(self._dev, slot, values, bypass, progress)
-            mf.verify_preset(self._dev, slot, values, bypass)
+            mf.save_preset(self._dev, slot, values, bypass, phase())
+            mf.verify_preset(self._dev, slot, values, bypass, phase())
         return {"preset": active, "parameters": len(words),
                 "bypass_flags": len(flags)}
 

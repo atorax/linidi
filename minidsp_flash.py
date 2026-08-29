@@ -472,14 +472,15 @@ def save_preset(dev: mp.MiniDSP, slot: Slot, values: bytes,
 
 
 def verify_preset(dev: mp.MiniDSP, slot: Slot, values: bytes,
-                  bypass: bytes | None = None) -> None:
+                  bypass: bytes | None = None,
+                  progress: Callable[[int, int], None] | None = None) -> None:
     """Read both blocks back and insist they match, byte for byte.
 
     Device Console's own verify step reads a single EEPROM key and checks it
     against a constant, which says nothing about whether the preset arrived
     intact. Since the blocks can be read back, they are.
     """
-    got = _read_span(dev, slot.vals.payload, slot.vals.payload_len)
+    got = _read_span(dev, slot.vals.payload, slot.vals.payload_len, progress)
     if got != values:
         bad = next((i for i, (a, b) in enumerate(zip(got, values)) if a != b),
                    min(len(got), len(values)))
