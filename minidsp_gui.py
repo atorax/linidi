@@ -4190,19 +4190,35 @@ class MainWindow(QMainWindow):
         Apply, so a preset change made during a save would move the device
         to a different slot part-way through storing to the one it was on.
 
-        So the strip goes down with the pollers. That includes MUTE ALL,
-        which is the one real cost -- it is unavailable for the ten seconds
-        a save takes. It sends a command like anything else, and the point
-        here is that nothing does.
+        So the whole window stands down, not a chosen list of controls. A
+        list is a thing to keep in step with every control added later, and
+        the first one forgotten is a bug that only appears while the device
+        is mid-write. The rule is simpler than the list: the program is
+        either running or talking to the device, never both.
+
+        All three timers stop, including the animation, which touches no
+        hardware. Under a rule this blunt it should not be the exception,
+        and a bar holding its last value reads as paused, which is what is
+        happening.
+
+        The costs, stated rather than discovered. MUTE ALL is unavailable
+        for the ten seconds a save takes -- it sends a command like
+        everything else. And if an operation ever hung, the window would
+        stay locked; what makes that survivable is that the transport times
+        out rather than blocking forever, and the title bar is outside the
+        central widget, so the window can still be closed.
         """
         self.set_polling(not busy)
-        self.master.setEnabled(not busy)
-        self.read_btn.setEnabled(not busy and self.readback is not None)
         if busy:
-            self.import_preset_btn.setEnabled(False)
-            self.import_chan_btn.setEnabled(False)
+            self.meter_anim.stop()
         else:
+            self.meter_anim.start(16)
+        central = self.centralWidget()
+        if central is not None:
+            central.setEnabled(not busy)
+        if not busy:
             self._import_buttons_state()
+            self.read_btn.setEnabled(self.readback is not None)
 
     def set_polling(self, on: bool) -> None:
         """Run the device pollers, or stand them down while it is busy.
