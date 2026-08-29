@@ -1113,11 +1113,16 @@ class CompressorPanel(QGroupBox):
 
     changed = Signal()
 
-    # Ranges are not published anywhere we can read, and four of the fields
+    # Ranges are not published anywhere we can read, and five of the fields
     # cannot be read back to probe them, so these are conventional limits
     # wide enough to cover anything the vendor's own editor offers. The
     # values a Flex 8 ships with -- 4:1, 20 dB knee, 40 ms, 100 ms -- all sit
     # comfortably inside them.
+    #
+    # Knee is the odd one out: the DSP accepts the write and ignores it. Four
+    # outputs given the same signal at the same instant, with knees of 0, 12,
+    # 24 and 40, all reported the same gain reduction to the last digit. It
+    # is kept here only so the value the preset carries can still be seen.
     FIELDS = (
         ("threshold", "Threshold", -90.0, 0.0, 1, 0.5, " dB"),
         ("ratio", "Ratio", 1.0, 100.0, 1, 0.5, ":1"),

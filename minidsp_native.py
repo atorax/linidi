@@ -731,6 +731,14 @@ COMP_BYPASSED, COMP_ENABLED = 3, 2
 # The order these are written in matters, so it is stated once. Everything
 # the compressor computes with goes down before it is switched on, and it is
 # switched off before any of it changes -- see _write_compressor.
+#
+# `knee` is written because it is part of the block and the stored preset
+# carries it, but this DSP ignores it. Measured by giving four outputs the
+# same signal at the same instant and identical compressors differing only
+# in knee -- 0, 12, 24 and 40 all returned a gain reduction of -10.99 dB and
+# a level of -54.2 dBFS, identical to the last digit, while the same method
+# resolved a ratio sweep across 7.3 dB. Device Console does not offer a knee
+# control and minidsp-rs has no knee field; this is why.
 COMP_FIELDS = ("threshold", "makeup", "ratio", "knee", "attack", "release")
 
 

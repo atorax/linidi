@@ -212,7 +212,8 @@ What the hardware will and will not tell you shapes the whole design:
 | **whether a filter is bypassed** | **no** | yes |
 | routing (mixer) | no | yes |
 | compressor threshold | yes | yes |
-| compressor makeup, ratio, knee, attack, release | no | yes |
+| compressor makeup, ratio, attack, release | no | yes |
+| compressor knee | no | accepted and ignored |
 | whether a compressor is bypassed | no | yes |
 | master volume, source, preset | yes | yes |
 | level meters | where the device has them | n/a |
