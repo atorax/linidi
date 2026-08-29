@@ -4022,11 +4022,26 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Reading from device...")
         n_out = len(self.project["outputs"])
         n_in = len(self.project["inputs"])
-        preset = 0
+        # Which preset is active decides which stored slot gets read and
+        # which one everything on screen is then labelled with. Falling back
+        # to 0 meant that a failed status read showed preset 1's stored
+        # configuration while the device ran preset 3, with nothing saying
+        # so -- and a preset's worth of unfamiliar settings appearing for no
+        # visible reason is how an afternoon gets lost. Better to not read.
         try:
             preset = int(self.daemon.status()["master"].get("preset", 0))
-        except Exception:                                  # noqa: BLE001
-            pass
+        except Exception as exc:                           # noqa: BLE001
+            self.set_device_busy(False)
+            self.statusBar().showMessage(
+                f"Read stopped: the device did not report which preset is "
+                f"active ({exc})", 10000)
+            QMessageBox.warning(
+                self, "Cannot tell which preset is active",
+                "The device did not answer when asked which preset it is "
+                "running.\n\nReading anyway would mean showing one preset's "
+                "settings while the device runs another, so nothing was "
+                "read. Try again.")
+            return
         self._reading_preset = preset
 
         # Only the direct-USB path can reach flash; over the daemon there is
