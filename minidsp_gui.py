@@ -164,6 +164,10 @@ def xover_colour(index: int) -> str:
     return XOVER_COLOURS[index % len(XOVER_COLOURS)]
 
 
+# How wide the panel beside the filter table is -- crossover on an output,
+# routing on an input. Shared so the table keeps one width across both.
+SIDE_PANEL_W = 300
+
 # Vertical padding on a list item. Rows that hold a widget have to add this to
 # their size hint, so both sides read it from here rather than from a literal
 # in the stylesheet that nothing else can see.
@@ -2192,12 +2196,14 @@ class ChannelEditor(QWidget):
         low_l.setContentsMargins(0, 0, 0, 0)
         low_l.setSpacing(8)
         low_l.addWidget(peq_box, 1)
-        # Never both on screen -- crossover belongs to an output and routing
-        # to an input -- so they need not agree on a width. Routing carries
-        # each destination's crossover alongside its name, which is longer
-        # than anything on a crossover card.
-        self.xo_holder.setFixedWidth(240)
-        self.routing_box.setFixedWidth(310)
+        # One width for both, even though only one is ever on screen. They
+        # take their room from the same row as the filter table, so letting
+        # them differ resized the table when you moved between an input and
+        # an output -- the table is the thing you are reading, and it should
+        # not change shape underneath you. The figure is what routing needs:
+        # its longest destination is a name plus a passband.
+        self.xo_holder.setFixedWidth(SIDE_PANEL_W)
+        self.routing_box.setFixedWidth(SIDE_PANEL_W)
         low_l.addWidget(self.xo_holder)
         low_l.addWidget(self.routing_box)
         root.addWidget(lower, 3)
