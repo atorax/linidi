@@ -3179,6 +3179,7 @@ class MainWindow(QMainWindow):
         # One width across the row: these are equal in weight, and a ragged
         # edge of differently sized buttons just reads as clutter.
         BTN_W = 150
+        SIDE_BTN_W = 124
         self.read_btn = QPushButton("Read Device")
         self.read_btn.setToolTip(
             "Read live coefficients off the hardware and load them here.\n"
@@ -3215,9 +3216,18 @@ class MainWindow(QMainWindow):
         self.import_chan_btn.clicked.connect(self.on_import_channel)
 
         for b in (self.read_btn, self.xml_btn, self.rew_btn,
-                  self.save_btn, self.load_btn,
-                  self.import_preset_btn, self.import_chan_btn):
+                  self.save_btn, self.load_btn):
             b.setFixedWidth(BTN_W)
+            bar.addWidget(b)
+
+        # Set apart, and smaller. The five before these act on the device or
+        # on a file; these two only move values around inside the project,
+        # which is a lighter thing to be doing. Equal size would have said
+        # they carry equal weight, and the gap says they are a different
+        # kind of action rather than the sixth and seventh of a series.
+        bar.addSpacing(22)
+        for b in (self.import_preset_btn, self.import_chan_btn):
+            b.setFixedWidth(SIDE_BTN_W)
             bar.addWidget(b)
 
         bar.addStretch(1)
