@@ -726,21 +726,34 @@ class NativeDevice:
         if not taps:
             raise mp.ProtocolError("a FIR needs at least one tap")
 
+        # Padded to the full block. Writing only the filter's own taps
+        # leaves whatever was there beyond them: a 32-tap filter followed by
+        # a 6-tap one reads back as six taps and then the tail of the first,
+        # which is measurably what this device does. Device Console writes
+        # only its own rows and trusts the tap count to stop the DSP reading
+        # past them -- and that may well be true, but the count cannot be
+        # read back to check, so trusting it would mean a filter that reads
+        # back as something other than what was written. Since reading back
+        # is the one thing FIR can do that no other filter here can, it is
+        # worth the packets to keep it meaningful.
+        payload = list(taps) + [0.0] * (capacity - len(taps))
         sent = 0
         with self._lock:
             self._dev.write_int(spec["enable"], FIR_BYPASSED)
-            # An integer, like delay's sample count -- not a float. The
-            # stored preset reads 6 through i32; as a float that word would
-            # read 1086324736.
+            # The count stays the real length, not the padded one: it is
+            # what the DSP is told the filter is, and an integer, like
+            # delay's sample count. The stored preset reads 6 through i32;
+            # as a float that word would read 1086324736.
             self._dev.write_int(spec["taps"], len(taps))
-            while sent < len(taps):
-                sent += self._dev.write_fir_taps(index, taps[sent:])
+            while sent < len(payload):
+                sent += self._dev.write_fir_taps(index, payload[sent:])
                 if progress is not None:
-                    progress(sent, len(taps))
+                    progress(sent, len(payload))
             self._dev.reload_dsp_param()
             if enabled:
                 self._dev.write_int(spec["enable"], FIR_ENABLED)
-        return {"index": index, "taps": sent, "enabled": bool(enabled)}
+        return {"index": index, "taps": len(taps), "written": sent,
+                "enabled": bool(enabled)}
 
     def _write_compressor(self, spec: dict[str, Any],
                           out: dict[str, Any]) -> None:
