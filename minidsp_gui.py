@@ -97,21 +97,18 @@ def _readable_on(colour: QColor) -> QColor:
     return QColor("#12141a") if lum > 140 else QColor("#ffffff")
 
 
-def card_heading(text: str, colour: str | None = None) -> QLabel:
+def card_heading(text: str) -> QLabel:
     """A card's name, drawn inside it rather than on its border.
 
     A QGroupBox title sits on the frame, which puts it outside the card and
     makes a long one look like a caption floating above the panel. Inside,
     it reads as part of the thing it names. Every card here does it this way,
-    so the panels look like one family rather than several.
-
-    A colour is for a card whose name is also an identity -- the crossover
-    groups take the colour their markers have on the plot.
+    and in the same colour, so the panels read as one family rather than
+    several -- a heading that identifies itself by hue is a badge, and the
+    cards that need one have a badge already.
     """
     lab = QLabel(text)
     lab.setObjectName("cardHeading")
-    if colour:
-        lab.setStyleSheet(f"color: {colour};")
     return lab
 
 
@@ -1230,9 +1227,11 @@ class CrossoverGroup(QGroupBox):
             f"Group {letter} on the response plot. Drag its marker to move "
             f"the corner, or turn the wheel over it to change the slope.")
         head.addWidget(self.badge)
-        # Named inside the card, in the colour its marker wears on the plot.
-        head.addWidget(card_heading(f"Crossover {letter}",
-                                    xover_colour(index)))
+        # Plain text. The badge beside it already carries the colour its
+        # marker wears on the plot, so tinting the words as well said the
+        # same thing twice and made one card's title look unlike every
+        # other card's for no additional meaning.
+        head.addWidget(card_heading(f"Crossover {letter}"))
         head.addStretch(1)
         self.enabled = QCheckBox("Enabled")
         self.enabled.setTristate(True)
