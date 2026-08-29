@@ -729,7 +729,10 @@ class NativeDevice:
         sent = 0
         with self._lock:
             self._dev.write_int(spec["enable"], FIR_BYPASSED)
-            self._dev.write_float(spec["taps"], float(len(taps)))
+            # An integer, like delay's sample count -- not a float. The
+            # stored preset reads 6 through i32; as a float that word would
+            # read 1086324736.
+            self._dev.write_int(spec["taps"], len(taps))
             while sent < len(taps):
                 sent += self._dev.write_fir_taps(index, taps[sent:])
                 if progress is not None:
