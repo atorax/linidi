@@ -2069,8 +2069,8 @@ def find_console_settings(serial: int | None = None,
                           extra: Path | None = None) -> list[Path]:
     """Settings directories Device Console has written, newest first.
 
-    Matches on serial when given: the store is keyed by the last digits of the
-    board serial, so 123456 lives under SN23456.
+    Matches on serial when given: the store is keyed by the last five digits
+    of the board serial, so a unit with serial 123456 lives under SN23456.
     """
     found: list[Path] = []
     roots = _candidate_roots()
