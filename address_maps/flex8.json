@@ -139,7 +139,8 @@
         "ratio": 4279,
         "knee": 4280,
         "attack": 4281,
-        "release": 4282
+        "release": 4282,
+        "meter": 50
       }
     },
     {
@@ -171,7 +172,8 @@
         "ratio": 4382,
         "knee": 4383,
         "attack": 4384,
-        "release": 4385
+        "release": 4385,
+        "meter": 51
       }
     },
     {
@@ -203,7 +205,8 @@
         "ratio": 4485,
         "knee": 4486,
         "attack": 4487,
-        "release": 4488
+        "release": 4488,
+        "meter": 52
       }
     },
     {
@@ -235,7 +238,8 @@
         "ratio": 4588,
         "knee": 4589,
         "attack": 4590,
-        "release": 4591
+        "release": 4591,
+        "meter": 53
       }
     },
     {
@@ -267,7 +271,8 @@
         "ratio": 4691,
         "knee": 4692,
         "attack": 4693,
-        "release": 4694
+        "release": 4694,
+        "meter": 54
       }
     },
     {
@@ -299,7 +304,8 @@
         "ratio": 4794,
         "knee": 4795,
         "attack": 4796,
-        "release": 4797
+        "release": 4797,
+        "meter": 55
       }
     },
     {
@@ -331,7 +337,8 @@
         "ratio": 4897,
         "knee": 4898,
         "attack": 4899,
-        "release": 4900
+        "release": 4900,
+        "meter": 56
       }
     },
     {
@@ -363,7 +370,8 @@
         "ratio": 5000,
         "knee": 5001,
         "attack": 5002,
-        "release": 5003
+        "release": 5003,
+        "meter": 57
       }
     }
   ]

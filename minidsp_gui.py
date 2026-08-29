@@ -1068,6 +1068,106 @@ class ResponsePlot(QWidget):
                        str(band.get("label", band["index"])))
 
 
+class CompressorPanel(QGroupBox):
+    """One output's compressor, with its gain-reduction meter.
+
+    Four of its six settings cannot be read back from the device, so what is
+    shown for those comes from the stored preset and from this project --
+    there is no way to ask the hardware to confirm them. The provenance line
+    at the bottom says so rather than letting the numbers imply they were
+    measured.
+    """
+
+    changed = Signal()
+
+    # Ranges are not published anywhere we can read, and four of the fields
+    # cannot be read back to probe them, so these are conventional limits
+    # wide enough to cover anything the vendor's own editor offers. The
+    # values a Flex 8 ships with -- 4:1, 20 dB knee, 40 ms, 100 ms -- all sit
+    # comfortably inside them.
+    FIELDS = (
+        ("threshold", "Threshold", -90.0, 0.0, 1, 0.5, " dB"),
+        ("ratio", "Ratio", 1.0, 100.0, 1, 0.5, ":1"),
+        ("attack", "Attack", 0.1, 1000.0, 1, 1.0, " ms"),
+        ("release", "Release", 1.0, 5000.0, 1, 10.0, " ms"),
+        ("knee", "Knee", 0.0, 40.0, 1, 1.0, " dB"),
+        ("makeup", "Makeup", -20.0, 20.0, 2, 0.5, " dB"),
+    )
+
+    def __init__(self):
+        super().__init__("Compressor")
+        self.data: dict[str, Any] = {}
+        self._loading = False
+        lay = QGridLayout(self)
+        lay.setContentsMargins(10, 6, 10, 8)
+
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        self.enabled = QCheckBox("Enabled")
+        self.enabled.setToolTip(
+            "Put the compressor into circuit on this output.\n"
+            "It sits in front of a driver, so it is left off unless you "
+            "switch it on.")
+        self.enabled.toggled.connect(self._emit)
+        head.addWidget(self.enabled)
+        head.addStretch(1)
+        self.gr = MeterBar("GR")
+        self.gr.setToolTip("Gain reduction: how far the compressor is "
+                           "pulling this output down right now")
+        head.addWidget(self.gr, 1)
+        holder = QWidget(); holder.setLayout(head)
+        lay.addWidget(holder, 0, 0, 1, 2)
+
+        self.boxes: dict[str, QDoubleSpinBox] = {}
+        for row, (key, label, lo, hi, dec, step, suffix) in enumerate(
+                self.FIELDS, start=1):
+            lab = QLabel(label); lab.setObjectName("muted")
+            sb = QDoubleSpinBox()
+            sb.setRange(lo, hi); sb.setDecimals(dec)
+            sb.setSingleStep(step); sb.setSuffix(suffix)
+            sb.valueChanged.connect(self._emit)
+            self.boxes[key] = sb
+            lay.addWidget(lab, row, 0)
+            lay.addWidget(sb, row, 1)
+
+        self.note = QLabel("")
+        self.note.setObjectName("muted")
+        self.note.setWordWrap(True)
+        lay.addWidget(self.note, len(self.FIELDS) + 1, 0, 1, 2)
+
+    def _emit(self, *_):
+        if not self._loading:
+            self.store()
+            self.changed.emit()
+
+    def load(self, comp: dict[str, Any] | None):
+        self._loading = True
+        self.data = comp if comp is not None else {}
+        self.enabled.setChecked(bool(self.data.get("enabled")))
+        for key, sb in self.boxes.items():
+            if self.data.get(key) is not None:
+                sb.setValue(float(self.data[key]))
+        src = self.data.get("bypass_source")
+        self.note.setText(
+            "Ratio, knee, attack and release do not read back from the "
+            "device. These came from its stored preset."
+            if src == "device" else
+            "Ratio, knee, attack and release do not read back from the "
+            "device, so these are this project's values, not measured ones.")
+        self._loading = False
+
+    def store(self):
+        if self.data is None:
+            return
+        self.data["enabled"] = self.enabled.isChecked()
+        for key, sb in self.boxes.items():
+            self.data[key] = sb.value()
+        self.data["bypass_source"] = "user"
+
+    def set_reduction(self, db: float):
+        self.gr.set_value(db)
+
+
 class CrossoverGroup(QGroupBox):
     """Editor for one crossover group (4 biquad slots)."""
 
@@ -1967,28 +2067,38 @@ class ChannelEditor(QWidget):
         self.legend.setObjectName("muted")
         root.addWidget(self.legend)
 
-        # Crossover and routing live in the right-hand column, not here:
-        # vertical space is the scarce dimension on a widescreen display, and
-        # the plot and PEQ table are what actually benefit from height.
-        self.side = QWidget()
-        side_l = QVBoxLayout(self.side)
-        side_l.setContentsMargins(0, 0, 0, 0)
-
-        xo = QVBoxLayout()          # stacked, the side column is narrow
+        # Crossover and routing sit beside the filter table rather than in
+        # the right-hand column. Both are things you move while watching the
+        # curve, so they belong next to it; the column is left for the
+        # processors you set and leave. They go alongside the table rather
+        # than above or below it because height is the scarce dimension on a
+        # widescreen display and the plot and table are what benefit from it
+        # -- the width was going spare.
+        xo = QVBoxLayout()
+        xo.setContentsMargins(0, 0, 0, 0)
         self.xo_groups = [CrossoverGroup(0), CrossoverGroup(1)]
         for g in self.xo_groups:
             g.changed.connect(self._emit)
             xo.addWidget(g)
+        xo.addStretch(1)
         self.xo_holder = QWidget(); self.xo_holder.setLayout(xo)
-        side_l.addWidget(self.xo_holder)
 
         self.routing_box = QGroupBox("Routing - outputs this input feeds")
         rl = QVBoxLayout(self.routing_box)
         self.routing = RoutingTable()
         self.routing.changed.connect(self._emit)
         rl.addWidget(self.routing)
-        side_l.addWidget(self.routing_box, 1)
-        side_l.addStretch(0)
+
+        # The right-hand column: the per-channel processors that are set and
+        # left. Compressor for an output, FIR for an input, mirroring how
+        # crossover and routing swap beside the table.
+        self.side = QWidget()
+        side_l = QVBoxLayout(self.side)
+        side_l.setContentsMargins(0, 0, 0, 0)
+        self.comp = CompressorPanel()
+        self.comp.changed.connect(self._emit)
+        side_l.addWidget(self.comp)
+        side_l.addStretch(1)
 
         # Two views of one set of bands: the parameters, or the coefficients
         # they compile to. Tabs rather than a second panel, because it is the
@@ -2023,7 +2133,19 @@ class ChannelEditor(QWidget):
         self.peq_stack.addWidget(self.peq)
         self.peq_stack.addWidget(self.bq)
         pl.addWidget(self.peq_stack, 1)
-        root.addWidget(peq_box, 3)
+
+        # The filter table and whatever this channel's other curve-adjacent
+        # controls are, side by side.
+        lower = QWidget()
+        low_l = QHBoxLayout(lower)
+        low_l.setContentsMargins(0, 0, 0, 0)
+        low_l.setSpacing(8)
+        low_l.addWidget(peq_box, 1)
+        self.xo_holder.setFixedWidth(240)
+        self.routing_box.setFixedWidth(240)
+        low_l.addWidget(self.xo_holder)
+        low_l.addWidget(self.routing_box)
+        root.addWidget(lower, 3)
 
     def _emit(self, *_):
         if not self._loading:
@@ -2041,10 +2163,14 @@ class ChannelEditor(QWidget):
         self.invert.setChecked(bool(chan.get("invert")))
         self.xo_holder.setVisible(is_output)
         self.routing_box.setVisible(not is_output)
+        # The compressor is an output-only processor on this hardware; an
+        # input has FIR in the same place, which is not built yet.
+        self.comp.setVisible(is_output)
         if is_output:
             groups = chan.get("crossover", [])
             for widget, group in zip(self.xo_groups, groups):
                 widget.load(group)
+            self.comp.load(chan.get("compressor"))
         else:
             self.routing.load(chan.get("routing", []),
                               (self.project or {}).get("outputs", []))
@@ -2254,6 +2380,9 @@ class ChannelEditor(QWidget):
             self.chan["delay"] = self.delay.value()
             self.chan["invert"] = self.invert.isChecked()
             self.chan["crossover"] = [w.store() for w in self.xo_groups]
+            # store() writes into the dict the panel was loaded with, which
+            # is this channel's own, so there is nothing to assign back.
+            self.comp.store()
         else:
             self.chan["routing"] = self.routing.store()
         # Only the visible tab is read. The hidden one holds widgets from
@@ -3369,6 +3498,27 @@ class MainWindow(QMainWindow):
         for m, v in zip(self.out_meters, status.get("output_levels", [])):
             m.set_value(v)
 
+    def _tick_compressor_meter(self):
+        """Gain reduction for the output on screen, if it has a compressor.
+
+        Only the selected channel's, and only while that panel is showing:
+        reading all eight every frame would cost more than the level meters
+        do, for a number nobody is looking at.
+        """
+        ed = self.editor
+        if ed.chan is None or not ed.is_output or not ed.comp.isVisible():
+            return
+        fn = getattr(self.daemon, "compressor_meters", None)
+        if fn is None:
+            return
+        try:
+            vals = fn()
+        except Exception:                                  # noqa: BLE001
+            return
+        idx = ed.chan.get("index", 0)
+        if idx < len(vals):
+            ed.comp.set_reduction(vals[idx])
+
     def tick_meters(self):
         """The fast poll: levels only. Two reads, whatever the channel count.
 
@@ -3384,6 +3534,7 @@ class MainWindow(QMainWindow):
             m.set_value(v)
         for m, v in zip(self.out_meters, outs):
             m.set_value(v)
+        self._tick_compressor_meter()
 
     def tick_animate(self):
         """Advance every bar's ballistics one frame. No device access."""
@@ -3391,6 +3542,8 @@ class MainWindow(QMainWindow):
             m.animate()
         for m in self.out_meters:
             m.animate()
+        if self.editor.comp.isVisible():
+            self.editor.comp.gr.animate()
 
     def on_master_change(self, payload):
         """Volume, mute, source or preset, straight to the device.

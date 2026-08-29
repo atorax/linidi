@@ -982,12 +982,27 @@ def default_crossover_group(index: int, mode: str) -> dict[str, Any]:
             "manual": None, "bypass_source": "default"}
 
 
+# One compressor's settings. The values are the ones a Flex 8 ships with,
+# read out of its own flash rather than invented.
+#
+# Four of the six do not read back, so a project is the only record of what
+# was asked for -- the device will take the write and then decline to say
+# what it holds. That is also why `enabled` defaults to False: a compressor
+# sits in front of a driver, and nothing should put one into circuit except
+# somebody deciding to.
+def default_compressor() -> dict[str, Any]:
+    return {"enabled": False, "threshold": -30.0, "makeup": 0.0,
+            "ratio": 4.0, "knee": 20.0, "attack": 40.0, "release": 100.0,
+            "bypass_source": "default"}
+
+
 def default_output(index: int, n_peq: int) -> dict[str, Any]:
     return {"index": index, "name": f"Out {index + 1}", "gain": 0.0,
             "mute": False, "invert": False, "delay": 0.0,
             "peq": [default_peq_band(i, n_peq) for i in range(n_peq)],
             "crossover": [default_crossover_group(0, "highpass"),
-                          default_crossover_group(1, "lowpass")]}
+                          default_crossover_group(1, "lowpass")],
+            "compressor": default_compressor()}
 
 
 def default_input(index: int, n_out: int, n_peq: int) -> dict[str, Any]:
@@ -1151,6 +1166,12 @@ def build_config_payload(project: dict[str, Any]) -> dict[str, Any]:
             "crossover": [_crossover_entry(g, rate)
                           for g in out.get("crossover", [])],
         }
+        comp = out.get("compressor")
+        if comp:
+            entry["compressor"] = {
+                k: (bool(comp[k]) if k == "enabled" else float(comp[k]))
+                for k in ("enabled", "threshold", "makeup", "ratio", "knee",
+                          "attack", "release") if k in comp}
         outputs.append(entry)
 
     inputs = []
@@ -1562,6 +1583,18 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
                     dst["manual"] = group["coeff"]
                 else:
                     dst["manual"] = None
+
+        comp = src.get("compressor")
+        if comp:
+            dst = out.setdefault("compressor", default_compressor())
+            for k, v in comp.items():
+                dst[k] = v
+            # Four of its six settings cannot be read back, so this is the
+            # only place they come from. Recording it as the device's own
+            # answer rather than a default keeps it out of the "state
+            # unknown" warning.
+            dst["bypass_source"] = "device"
+            stats["compressor"] = stats.get("compressor", 0) + 1
 
         _apply_stored_bands(out["peq"], src.get("peq", []), stats)
 

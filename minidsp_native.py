@@ -170,6 +170,24 @@ class NativeDevice:
             out.append(vals)
         return out[0], out[1]
 
+    def compressor_meters(self) -> list[float]:
+        """Gain reduction per output, if the map records those meters.
+
+        A separate call from meters() because the level meters are polled
+        many times a second for the bars and this is only wanted while a
+        compressor panel is on screen.
+        """
+        addrs = [s["compressor"]["meter"] for s in self.amap.outputs
+                 if "compressor" in s and "meter" in s["compressor"]]
+        if not addrs:
+            return []
+        lo, hi = min(addrs), max(addrs)
+        if hi - lo + 1 != len(addrs) or len(addrs) > MAX_FLOATS_PER_READ:
+            with self._lock:
+                return [self._dev.read_floats(a, 1)[0] for a in addrs]
+        with self._lock:
+            return self._dev.read_floats(lo, hi - lo + 1)
+
     def meters(self) -> tuple[list[float], list[float]]:
         """Input and output levels, and nothing else.
 
@@ -352,6 +370,21 @@ class NativeDevice:
                 raw = p.i32(spec["invert"])
                 if raw is not None:
                     ch["invert"] = bool(raw)
+            comp = spec.get("compressor")
+            if comp:
+                entry: dict[str, Any] = {}
+                for key in ("threshold", "makeup", "ratio", "knee",
+                            "attack", "release"):
+                    if key in comp:
+                        v = p.f32(comp[key])
+                        if v is not None:
+                            entry[key] = round(v, 3)
+                raw = p.i32(comp["enable"]) if "enable" in comp else None
+                if raw in (COMP_BYPASSED, COMP_ENABLED):
+                    entry["enabled"] = raw == COMP_ENABLED
+                if entry:
+                    ch["compressor"] = entry
+
             groups = []
             for gi, base in enumerate(spec.get("xover_groups", [])):
                 vals = p.floats(base, XOVER_SLOTS * BIQUAD_FLOATS)
@@ -441,6 +474,7 @@ class NativeDevice:
                                         1 if out["invert"] else 0)
                 if "mute" in out and "enable" in spec:
                     self._dev.write_int(spec["enable"], _gate(out["mute"]))
+                self._write_compressor(spec, out)
 
                 peq_addrs = spec.get("peq", [])
                 for band in out.get("peq", []):
@@ -553,6 +587,14 @@ class NativeDevice:
                 put_int(spec["invert"], 1 if out["invert"] else 0)
             if "mute" in out and "enable" in spec:
                 put_int(spec["enable"], _gate(out["mute"]))
+            comp, want = spec.get("compressor"), out.get("compressor")
+            if comp and want:
+                for key in COMP_FIELDS:
+                    if key in want and key in comp:
+                        put_float(comp[key], float(want[key]))
+                if "enable" in comp and want.get("enabled") is not None:
+                    put_int(comp["enable"], COMP_ENABLED if want["enabled"]
+                            else COMP_BYPASSED)
             peq_addrs = spec.get("peq", [])
             for band in out.get("peq", []):
                 if band["index"] >= len(peq_addrs):
@@ -594,6 +636,34 @@ class NativeDevice:
                 if dest < len(gates):
                     put_int(gates[dest], _gate(not route.get("enabled")))
         return words, flags
+
+    def _write_compressor(self, spec: dict[str, Any],
+                          out: dict[str, Any]) -> None:
+        """One output's compressor, switched off while it is changed.
+
+        The order is deliberate: bypass it, write the settings, then put it
+        back into circuit if that is what was asked for. Writing a live
+        compressor's parameters underneath it left this device computing
+        against a half-updated set and emitting NaN from that channel -- a
+        NaN that then propagated and did not clear by itself.
+
+        Four of the six settings cannot be read back, so there is no way to
+        confirm what landed. That is a reason to be careful about the order,
+        not a reason to skip the write.
+        """
+        comp = spec.get("compressor")
+        want = out.get("compressor")
+        if not comp or not want:
+            return
+        if "enable" in comp:
+            self._dev.write_int(comp["enable"], COMP_BYPASSED)
+        for key in COMP_FIELDS:
+            if key in want and key in comp:
+                self._dev.write_float(comp[key], float(want[key]))
+        if "enable" in comp and want.get("enabled") is not None:
+            self._dev.write_int(
+                comp["enable"],
+                COMP_ENABLED if want["enabled"] else COMP_BYPASSED)
 
     def _check_payload(self, payload: dict[str, Any]) -> None:
         """Reject a payload that does not fit this device, before writing.
@@ -644,6 +714,15 @@ class NativeDevice:
 BIQUAD_FLOATS = 5
 
 GATE_MUTED, GATE_PASSING = 1, 2
+
+# A compressor's on/off field, which does not use the 1/2 gate convention.
+# From Device Console's own audioProcessingDefn: bypass ? 0x3 : 0x2.
+COMP_BYPASSED, COMP_ENABLED = 3, 2
+
+# The order these are written in matters, so it is stated once. Everything
+# the compressor computes with goes down before it is switched on, and it is
+# switched off before any of it changes -- see _write_compressor.
+COMP_FIELDS = ("threshold", "makeup", "ratio", "knee", "attack", "release")
 
 
 def _gate(muted: Any) -> int:
