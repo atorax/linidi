@@ -31,6 +31,7 @@ from PySide6.QtGui import (QColor, QFont, QIcon, QPainter, QPainterPath,
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+    QProgressBar,
     QHeaderView, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMessageBox, QPlainTextEdit, QPushButton, QSlider, QStackedWidget,
     QStatusBar, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
@@ -1399,6 +1400,11 @@ def provenance_item(b: dict[str, Any]) -> QTableWidgetItem:
                "bypass together.\nThis is what the device loads at power-on. "
                "Anything written live since\nthen has changed what is running "
                "without changing this.")
+    elif state == "imported":
+        label, colour = "from import", ACCENT
+        tip = ("Copied from another channel or another preset.\n"
+               "These are not this channel's device values until they are "
+               "applied.")
     elif state == "config":
         label, colour = "from config", ACCENT
         tip = ("Loaded from a Device Console export. Used only where the "
@@ -2896,6 +2902,98 @@ class RewDialog(QDialog):
 
 
 
+class ImportDialog(QDialog):
+    """Pick a source to import from. The destination is where you already are.
+
+    One direction, so there is nothing to remember between two actions. The
+    page underneath is the destination, which means the source list only ever
+    offers like for like -- on an output you are shown outputs -- and there is
+    no wrong pairing to detect and refuse, because none can be expressed.
+
+    Nothing is read here. The read happens after this closes, so arrowing
+    through the preset list does not fire one flash read per keystroke, and
+    the result is visible the moment it lands: the destination is the page
+    you are looking at.
+    """
+
+    def __init__(self, parent, kind: str, n_presets: int,
+                 current_preset: int | None, names: list[str],
+                 here: int | None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Import {kind}")
+        self.setMinimumWidth(360)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+
+        what = "settings" if here is None else f"into {names[here]}"
+        hint = QLabel(f"Choose where to bring {what} from. Nothing is "
+                      f"written to the device -- the import lands in this "
+                      f"project, and Apply or Save is still yours to press.")
+        hint.setObjectName("muted"); hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        form = QGridLayout()
+        form.setColumnStretch(1, 1)
+        lab = QLabel("Preset"); lab.setObjectName("muted")
+        form.addWidget(lab, 0, 0)
+        self.preset = QComboBox()
+        for i in range(n_presets):
+            mark = "  (this one)" if i == current_preset else ""
+            self.preset.addItem(f"Preset {i + 1}{mark}", i)
+        if current_preset is not None:
+            self.preset.setCurrentIndex(current_preset)
+        form.addWidget(self.preset, 0, 1)
+
+        self.chan = None
+        if here is not None:
+            lab = QLabel(kind.capitalize()); lab.setObjectName("muted")
+            form.addWidget(lab, 1, 0)
+            self.chan = QComboBox()
+            form.addWidget(self.chan, 1, 1)
+        lay.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        self.go = buttons.addButton("Import", QDialogButtonBox.AcceptRole)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+        # After the button box: _refill enables and disables Import, so it
+        # cannot run before there is an Import button to speak of.
+        self._names, self._here = names, here
+        self._current_preset = current_preset
+        if self.chan is not None:
+            self.preset.currentIndexChanged.connect(self._refill)
+            self._refill()
+
+    def _refill(self):
+        """Offer every like channel, minus the one we would import onto.
+
+        Importing a channel onto itself is a no-op, so it is not offered --
+        but only when the source preset is the one on screen. From another
+        preset the same index is the most useful entry in the list, because
+        it is how you get a channel's earlier tuning back.
+        """
+        same = self.preset.currentData() == self._current_preset
+        keep = self.chan.currentData()
+        self.chan.blockSignals(True)
+        self.chan.clear()
+        for i, name in enumerate(self._names):
+            if same and i == self._here:
+                continue
+            self.chan.addItem(name, i)
+        idx = self.chan.findData(keep)
+        self.chan.setCurrentIndex(max(0, idx))
+        self.chan.blockSignals(False)
+        self.go.setEnabled(self.chan.count() > 0)
+
+    def choice(self) -> tuple[int, int | None]:
+        """(preset index, channel index or None for a whole preset)."""
+        return (self.preset.currentData(),
+                self.chan.currentData() if self.chan is not None else None)
+
+
 class OfflineBrowser(QTextBrowser):
     """A text view that cannot fetch anything off the machine.
 
@@ -2977,6 +3075,11 @@ class HelpDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
+    # Emitted from the worker thread while a flash read runs, so the bar
+    # updates on the main thread by queued connection rather than by a
+    # widget being touched from the wrong one.
+    read_progress = Signal(int, int)
+
     def __init__(self, opts):
         super().__init__()
         self.opts = opts
@@ -3098,8 +3201,22 @@ class MainWindow(QMainWindow):
         self.load_btn = QPushButton("Load project")
         self.load_btn.clicked.connect(self.on_load)
 
+        # Import runs one way, into where you already are, so these say what
+        # they will land on rather than naming a source. The channel one is
+        # relabelled on every selection because the page is the destination.
+        self.import_preset_btn = QPushButton("Import preset")
+        self.import_preset_btn.setToolTip(
+            "Bring another preset's whole configuration into this project.\n"
+            "Reads that preset out of the device's flash. Nothing is "
+            "written.")
+        self.import_preset_btn.clicked.connect(self.on_import_preset)
+
+        self.import_chan_btn = QPushButton("Import output")
+        self.import_chan_btn.clicked.connect(self.on_import_channel)
+
         for b in (self.read_btn, self.xml_btn, self.rew_btn,
-                  self.save_btn, self.load_btn):
+                  self.save_btn, self.load_btn,
+                  self.import_preset_btn, self.import_chan_btn):
             b.setFixedWidth(BTN_W)
             bar.addWidget(b)
 
@@ -3154,6 +3271,14 @@ class MainWindow(QMainWindow):
         root.addWidget(holder2, 1)
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
+        # Flash reads take seconds and the layer underneath has always
+        # reported how far along it is; nothing ever displayed it.
+        self.progress = QProgressBar()
+        self.progress.setMaximumWidth(180)
+        self.progress.setTextVisible(False)
+        self.progress.hide()
+        self.statusBar().addPermanentWidget(self.progress)
+        self.read_progress.connect(self._on_progress)
 
         # Three rates, because three things change at three speeds.
         #
@@ -3435,6 +3560,7 @@ class MainWindow(QMainWindow):
 
     def on_select(self, _row):
         self._paint_selection()
+        self._import_buttons_state()
         chan, is_out = self.current_channel()
         if chan is not None:
             self.editor.project = self.project
@@ -3689,7 +3815,12 @@ class MainWindow(QMainWindow):
             stored = stored_error = None
             if native is not None:
                 try:
-                    stored = native.stored_config(preset)
+                    stored = native.stored_config(
+                        preset,
+                        preset=native.read_stored_preset(
+                            preset,
+                            progress=lambda d, t:
+                                self.read_progress.emit(d, t)))
                 except Exception as exc:               # noqa: BLE001
                     stored_error = str(exc)
             return outs, ins, stored, stored_error
@@ -3698,6 +3829,7 @@ class MainWindow(QMainWindow):
                        on_error=self._read_failed)
 
     def _read_done(self, result):
+        self.progress.hide()
         readings, input_readings, stored, stored_error = result
         core.apply_readback(self.project, readings, input_readings)
         self._last_stored = None
@@ -3752,6 +3884,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(msg, 15000)
 
     def _read_failed(self, msg):
+        self.progress.hide()
         self.read_btn.setEnabled(True)
         self.statusBar().showMessage(f"Read failed: {msg}", 8000)
         QMessageBox.warning(self, "Read failed", msg)
@@ -4118,6 +4251,151 @@ class MainWindow(QMainWindow):
                  if len(filters) > applied else "")
         self.statusBar().showMessage(
             f"Imported {applied} biquad(s){extra}", 6000)
+
+    def _on_progress(self, done: int, total: int) -> None:
+        if total <= 0 or done >= total:
+            self.progress.hide()
+            return
+        if not self.progress.isVisible():
+            self.progress.show()
+        self.progress.setMaximum(total)
+        self.progress.setValue(done)
+
+    def _n_presets(self) -> int:
+        native = self._native()
+        if native is not None:
+            try:
+                return max(1, len(native.preset_slots()))
+            except Exception:                              # noqa: BLE001
+                pass
+        return 4
+
+    def _native(self):
+        """The direct-USB readback, or None when running over the daemon.
+
+        Only the USB path can reach flash, so importing from another preset
+        is offered only when there is one.
+        """
+        rb = self.readback
+        return rb if rb is not None and hasattr(rb, "stored_config") else None
+
+    def _import_buttons_state(self) -> None:
+        """Label the channel button for what it will write onto."""
+        chan, is_out = self.current_channel()
+        kind = "output" if is_out else "input"
+        self.import_chan_btn.setText(f"Import {kind}")
+        self.import_chan_btn.setEnabled(chan is not None)
+        self.import_chan_btn.setToolTip(
+            f"Replace this {kind}'s settings with another {kind}'s.\n"
+            f"Everything but its number and its "
+            f"{'name' if is_out else 'name and routing'} is brought over.\n"
+            f"Lands in this project; nothing is written to the device.")
+        self.import_preset_btn.setEnabled(self._native() is not None)
+
+    def _read_preset_async(self, index: int, then) -> None:
+        """Read one stored preset off the device, then hand it to `then`."""
+        native = self._native()
+        if native is None:
+            QMessageBox.warning(
+                self, "No flash access",
+                "Reading another preset needs the direct USB connection.")
+            return
+        for b in (self.import_preset_btn, self.import_chan_btn,
+                  self.read_btn):
+            b.setEnabled(False)
+        self.statusBar().showMessage(f"Reading preset {index + 1} from "
+                                     f"device...")
+
+        def work():
+            return native.stored_config(
+                index,
+                preset=native.read_stored_preset(
+                    index, progress=lambda d, t: self.read_progress.emit(d,
+                                                                         t)))
+
+        def done(cfg):
+            self.progress.hide()
+            self._import_buttons_state()
+            self.read_btn.setEnabled(True)
+            then(cfg)
+
+        def failed(msg):
+            self.progress.hide()
+            self._import_buttons_state()
+            self.read_btn.setEnabled(True)
+            self.statusBar().showMessage(f"Could not read preset "
+                                         f"{index + 1}: {msg}", 8000)
+
+        self.tasks.run(work, on_done=done, on_error=failed)
+
+    def _project_from_stored(self, cfg: dict[str, Any]) -> dict[str, Any]:
+        """That preset, as a project, so an import has one shape to read."""
+        n_in = len(self.project["inputs"])
+        n_out = len(self.project["outputs"])
+        n_peq = len(self.project["outputs"][0]["peq"])
+        tmp = core.new_project(n_in, n_out, n_peq, self.project["rate"])
+        core.import_preset(tmp, cfg)
+        return tmp
+
+    def on_import_channel(self):
+        chan, is_out = self.current_channel()
+        if chan is None:
+            return
+        kind = "output" if is_out else "input"
+        here = chan["index"]
+        pool = self.project["outputs" if is_out else "inputs"]
+        names = [c["name"] for c in pool]
+        n_presets = self._n_presets() if self._native() is not None else 1
+        dlg = ImportDialog(self, kind, n_presets, self._project_preset,
+                           names, here)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        preset, src_idx = dlg.choice()
+        if src_idx is None:
+            return
+
+        def land(source_project):
+            src = source_project["outputs" if is_out else "inputs"][src_idx]
+            stats = core.import_channel(chan, src, is_out)
+            self.on_select(self.chan_list.currentRow())
+            self.on_edit()
+            where = ("" if preset == self._project_preset
+                     else f" of preset {preset + 1}")
+            self.statusBar().showMessage(
+                f"Imported {names[src_idx]}{where} into {chan['name']} -- "
+                f"{stats['peq']} PEQ bands"
+                + (f", {stats['crossover']} crossover groups"
+                   if stats["crossover"] else "")
+                + ". Not written to the device yet.", 12000)
+
+        if preset == self._project_preset or self._native() is None:
+            land(self.project)
+        else:
+            self._read_preset_async(preset, lambda cfg: land(
+                self._project_from_stored(cfg)))
+
+    def on_import_preset(self):
+        if self.project is None:
+            return
+        dlg = ImportDialog(self, "preset", self._n_presets(),
+                           self._project_preset, [], None)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        preset, _ = dlg.choice()
+
+        def land(cfg):
+            stats = core.import_preset(self.project, cfg)
+            self._project_preset = preset
+            self.on_select(self.chan_list.currentRow())
+            self.refresh_list()
+            self.on_edit()
+            self.update_warning()
+            self.statusBar().showMessage(
+                f"Imported preset {preset + 1}: {stats['outputs']} outputs, "
+                f"{stats['inputs']} inputs, {stats['peq']} PEQ bands. "
+                f"Not written to the device yet.", 12000)
+
+        self._read_preset_async(preset, land)
 
     def on_save(self):
         path, _ = QFileDialog.getSaveFileName(

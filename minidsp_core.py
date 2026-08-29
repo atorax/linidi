@@ -28,6 +28,7 @@ License: Apache-2.0
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -1623,6 +1624,111 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
                 route["gain"] = found["gain"]
         _apply_stored_bands(inp["peq"], src.get("peq", []), stats)
 
+    return stats
+
+
+# What travels when one channel is imported onto another, and what does not.
+#
+# The rule is that tuning travels and identity stays. A channel's identity is
+# its index, its name, and -- for an input -- its routing, which is the thing
+# that makes it the left one rather than the right one. Copy an input's
+# routing onto its partner and both inputs feed the same pair of outputs: the
+# other pair goes silent and the first pair sums to mono. Everything else on a
+# channel is work someone did, which is the whole reason for importing it.
+IMPORT_FIELDS_OUTPUT = ("gain", "mute", "invert", "delay")
+IMPORT_FIELDS_INPUT = ("gain", "mute")
+
+# Copied band and group fields. `index` is position and stays put; the
+# provenance keys are rewritten afterwards rather than inherited, because a
+# band that came off the device for output 1 is not a reading of output 3.
+_BAND_FIELDS = ("type", "freq", "q", "gain", "enabled", "manual",
+                "manual_source")
+_GROUP_FIELDS = ("mode", "alignment", "order", "freq", "enabled", "manual")
+
+
+def _mark_imported(entry: dict[str, Any]) -> None:
+    """Say where a filter's values came from, now that they have moved."""
+    entry["bypass_source"] = "import"
+    entry["read_state"] = "imported"
+
+
+def import_channel(dst: dict[str, Any], src: dict[str, Any],
+                   is_output: bool) -> dict[str, int]:
+    """Copy one channel's tuning onto another, in place.
+
+    Both sides are in project shape, which is what makes this one code path
+    rather than two: a channel from another preset is turned into a project
+    channel first, so importing from the next output and importing from
+    preset 3 differ only in where `src` came from.
+
+    Enabled state travels with everything else. It is visible on the strip
+    and on the channel, so an imported mute explains itself, and leaving it
+    behind would mean the one thing you could not carry over is the one the
+    hardware makes easiest to see.
+    """
+    stats = {"peq": 0, "crossover": 0, "compressor": 0, "fields": 0}
+    for key in (IMPORT_FIELDS_OUTPUT if is_output else IMPORT_FIELDS_INPUT):
+        if key in src:
+            dst[key] = copy.deepcopy(src[key])
+            stats["fields"] += 1
+
+    for slot, band in enumerate(src.get("peq", [])):
+        if slot >= len(dst.get("peq", [])):
+            break
+        d = dst["peq"][slot]
+        for k in _BAND_FIELDS:
+            if k in band:
+                d[k] = copy.deepcopy(band[k])
+        _mark_imported(d)
+        stats["peq"] += 1
+
+    if not is_output:
+        return stats
+
+    for gi, group in enumerate(src.get("crossover", [])):
+        if gi >= len(dst.get("crossover", [])):
+            break
+        d = dst["crossover"][gi]
+        for k in _GROUP_FIELDS:
+            if k in group:
+                d[k] = copy.deepcopy(group[k])
+        _mark_imported(d)
+        stats["crossover"] += 1
+
+    comp = src.get("compressor")
+    if comp:
+        d = dst.setdefault("compressor", default_compressor())
+        d.update(copy.deepcopy(comp))
+        d["bypass_source"] = "import"
+        stats["compressor"] += 1
+    return stats
+
+
+def import_preset(project: dict[str, Any],
+                  cfg: dict[str, Any]) -> dict[str, int]:
+    """Fold a whole stored preset into a project, as an import.
+
+    Routing travels here, unlike a channel import. Copying one input's
+    routing onto another rearranges the signal flow; bringing a whole
+    preset's routing is the signal flow, and leaving it behind would import
+    a configuration that cannot work.
+
+    `readable` is set because there is no live read to prefer: every value
+    is the device's own, and the point is to see that preset rather than
+    the one that is running.
+    """
+    stats = apply_stored_preset(project, cfg, readable=True)
+    # apply_stored_preset marks its work as read from the device, which is
+    # true of where the bytes came from and false about what they describe:
+    # these are another preset's values, not this channel's current state.
+    for chans in (project["outputs"], project["inputs"]):
+        for ch in chans:
+            for entry in ch.get("peq", []):
+                _mark_imported(entry)
+            for entry in ch.get("crossover", []):
+                _mark_imported(entry)
+            if ch.get("compressor"):
+                ch["compressor"]["bypass_source"] = "import"
     return stats
 
 
