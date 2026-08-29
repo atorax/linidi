@@ -211,6 +211,9 @@ What the hardware will and will not tell you shapes the whole design:
 | crossover and PEQ coefficients | crossover only | yes |
 | **whether a filter is bypassed** | **no** | yes |
 | routing (mixer) | no | yes |
+| compressor threshold | yes | yes |
+| compressor makeup, ratio, knee, attack, release | no | yes |
+| whether a compressor is bypassed | no | yes |
 | master volume, source, preset | yes | yes |
 | level meters | where the device has them | n/a |
 
@@ -326,8 +329,8 @@ On the minidspd fallback path only:
 - [x] Input routing matrix in the UI
 - [x] Pure-Python USB transport, dropping the minidsp-rs dependency
 - [x] Single-file executable
-- [ ] Compressor — the Flex 8 exposes none, so this needs other hardware
-- [ ] FIR — likewise
+- [x] Compressor — eight of them, one per output
+- [ ] FIR — two blocks, 2048 taps each, on the inputs
 
 ### On bypass
 
@@ -339,7 +342,8 @@ bypassed, and writing a guessed `bypass: false` would switch it on.
 
 Bypass is set by command `0x19` and has no readable address — the device
 profile has `_STATUS` symbols for `COMP`, `DGain`, `FIR` and `Mixer`, but none
-for `PEQ` or `BPF`. Coefficients also survive being bypassed, so a dormant
+for `PEQ` or `BPF`. The `COMP` one exists and still does not help: written as
+3 for bypassed and 2 for enabled, it reads back as 1 on every output. Coefficients also survive being bypassed, so a dormant
 filter reads back looking exactly like a live one. Importing a Device Console
 export is the only way to recover that state; the app can *write* bypass
 correctly either way.

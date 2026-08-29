@@ -1589,7 +1589,7 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
             dst = out.setdefault("compressor", default_compressor())
             for k, v in comp.items():
                 dst[k] = v
-            # Four of its six settings cannot be read back, so this is the
+            # Five of its six settings cannot be read back, so this is the
             # only place they come from. Recording it as the device's own
             # answer rather than a default keeps it out of the "state
             # unknown" warning.

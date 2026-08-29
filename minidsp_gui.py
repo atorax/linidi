@@ -96,15 +96,21 @@ def _readable_on(colour: QColor) -> QColor:
     return QColor("#12141a") if lum > 140 else QColor("#ffffff")
 
 
-def card_heading(text: str) -> QLabel:
+def card_heading(text: str, colour: str | None = None) -> QLabel:
     """A card's name, drawn inside it rather than on its border.
 
     A QGroupBox title sits on the frame, which puts it outside the card and
     makes a long one look like a caption floating above the panel. Inside,
-    it reads as part of the thing it names.
+    it reads as part of the thing it names. Every card here does it this way,
+    so the panels look like one family rather than several.
+
+    A colour is for a card whose name is also an identity -- the crossover
+    groups take the colour their markers have on the plot.
     """
     lab = QLabel(text)
     lab.setObjectName("cardHeading")
+    if colour:
+        lab.setStyleSheet(f"color: {colour};")
     return lab
 
 
@@ -1089,11 +1095,13 @@ class ResponsePlot(QWidget):
 class CompressorPanel(QGroupBox):
     """One output's compressor, with its gain-reduction meter.
 
-    Four of its six settings cannot be read back from the device, so what is
+    Five of its six settings cannot be read back from the device, so what is
     shown for those comes from the stored preset and from this project --
     there is no way to ask the hardware to confirm them. The provenance line
     at the bottom says so rather than letting the numbers imply they were
-    measured.
+    measured. Only threshold answers a live read; makeup, ratio, knee, attack
+    and release all come back as zero, and the enable field reads 1, which is
+    neither of the two values it is ever written with.
     """
 
     changed = Signal()
@@ -1113,11 +1121,12 @@ class CompressorPanel(QGroupBox):
     )
 
     def __init__(self):
-        super().__init__("Compressor")
+        super().__init__()
         self.data: dict[str, Any] = {}
         self._loading = False
         lay = QGridLayout(self)
         lay.setContentsMargins(10, 6, 10, 8)
+        lay.addWidget(card_heading("Compressor"), 0, 0, 1, 2)
 
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
@@ -1134,11 +1143,11 @@ class CompressorPanel(QGroupBox):
                            "pulling this output down right now")
         head.addWidget(self.gr, 1)
         holder = QWidget(); holder.setLayout(head)
-        lay.addWidget(holder, 0, 0, 1, 2)
+        lay.addWidget(holder, 1, 0, 1, 2)
 
         self.boxes: dict[str, QDoubleSpinBox] = {}
         for row, (key, label, lo, hi, dec, step, suffix) in enumerate(
-                self.FIELDS, start=1):
+                self.FIELDS, start=2):
             lab = QLabel(label); lab.setObjectName("muted")
             sb = QDoubleSpinBox()
             sb.setRange(lo, hi); sb.setDecimals(dec)
@@ -1151,7 +1160,7 @@ class CompressorPanel(QGroupBox):
         self.note = QLabel("")
         self.note.setObjectName("muted")
         self.note.setWordWrap(True)
-        lay.addWidget(self.note, len(self.FIELDS) + 1, 0, 1, 2)
+        lay.addWidget(self.note, len(self.FIELDS) + 2, 0, 1, 2)
 
     def _emit(self, *_):
         if not self._loading:
@@ -1194,12 +1203,8 @@ class CrossoverGroup(QGroupBox):
     def __init__(self, index: int):
         self.index = index
         letter = xover_label(index)
-        super().__init__(f"Crossover {letter}")
+        super().__init__()
         self.data: dict[str, Any] = {}
-        # The title carries the colour its marker has on the plot, so the
-        # card and the disc on the curve read as the same object.
-        self.setStyleSheet(
-            f"QGroupBox::title {{ color: {xover_colour(index)}; }}")
         lay = QGridLayout(self)
         lay.setContentsMargins(10, 6, 10, 8)
 
@@ -1212,12 +1217,15 @@ class CrossoverGroup(QGroupBox):
             f"Group {letter} on the response plot. Drag its marker to move "
             f"the corner, or turn the wheel over it to change the slope.")
         head.addWidget(self.badge)
+        # Named inside the card, in the colour its marker wears on the plot.
+        head.addWidget(card_heading(f"Crossover {letter}",
+                                    xover_colour(index)))
+        head.addStretch(1)
         self.enabled = QCheckBox("Enabled")
         self.enabled.setTristate(True)
         self.enabled.clicked.connect(self._enabled_clicked)
         self.enabled.toggled.connect(self._emit)
         head.addWidget(self.enabled)
-        head.addStretch(1)
         holder = QWidget()
         holder.setLayout(head)
         lay.addWidget(holder, 0, 0, 1, 2)
@@ -3113,8 +3121,9 @@ class MainWindow(QMainWindow):
         right = QWidget()
         ml = QVBoxLayout(right)
         ml.setContentsMargins(8, 8, 8, 8)
-        levels = QGroupBox("Levels")
+        levels = QGroupBox()
         lv = QVBoxLayout(levels)
+        lv.addWidget(card_heading("Levels"))
         lab = QLabel("Inputs"); lab.setObjectName("muted")
         lv.addWidget(lab)
         self.in_meters: list[MeterBar] = []

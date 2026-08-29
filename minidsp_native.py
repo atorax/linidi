@@ -647,7 +647,13 @@ class NativeDevice:
         against a half-updated set and emitting NaN from that channel -- a
         NaN that then propagated and did not clear by itself.
 
-        Four of the six settings cannot be read back, so there is no way to
+        Device Console writes the status field *first*, with the value it
+        wants to end on, and then writes the settings underneath it. So a
+        vendor write that switches a compressor on walks through exactly the
+        state that produced the NaN here. Bypassing first costs one extra
+        write and removes that window, which is why this does not copy them.
+
+        Five of the six settings cannot be read back, so there is no way to
         confirm what landed. That is a reason to be careful about the order,
         not a reason to skip the write.
         """
@@ -716,7 +722,10 @@ BIQUAD_FLOATS = 5
 GATE_MUTED, GATE_PASSING = 1, 2
 
 # A compressor's on/off field, which does not use the 1/2 gate convention.
-# From Device Console's own audioProcessingDefn: bypass ? 0x3 : 0x2.
+# From Device Console's own audioProcessingDefn: bypass ? 0x3 : 0x2, and it
+# reads the field back with `parseInt(...) === 3` for bypassed. Live reads of
+# this address return 1 on every output regardless, so a read that is neither
+# 3 nor 2 is discarded rather than guessed at.
 COMP_BYPASSED, COMP_ENABLED = 3, 2
 
 # The order these are written in matters, so it is stated once. Everything
