@@ -2870,17 +2870,23 @@ class MasterStrip(QFrame):
             self.volume.setValue(int(round(float(m.get("volume", 0.0)) * 10)))
             self._volume_preview(self.volume.value())
         muted = bool(m.get("mute"))
-        self.muted = muted
+        was_muted, self.muted = self.muted, muted
         # MUTE ALL keeps its label and signals state by colour alone: a
         # dark LED and white text while sound is passing, both red once
         # the device is muted. The label never changes, so the button
         # never looks like a different control.
-        self.panic_btn.setIcon(led_icon(12, DANGER if muted else "#000000"))
-        self.panic_btn.setProperty("spent", muted)
-        self.panic_btn.setToolTip("Click to unmute" if muted
-                                  else "Mute the device immediately")
-        self.panic_btn.style().unpolish(self.panic_btn)
-        self.panic_btn.style().polish(self.panic_btn)
+        # Only when it actually changes. This ran on every poll, which
+        # built a fresh icon and pushed the button through the style engine
+        # twice a second for the life of the session, to arrive at the
+        # appearance it already had.
+        if was_muted != muted or self.panic_btn.icon().isNull():
+            self.panic_btn.setIcon(
+                led_icon(12, DANGER if muted else "#000000"))
+            self.panic_btn.setProperty("spent", muted)
+            self.panic_btn.setToolTip("Click to unmute" if muted
+                                      else "Mute the device immediately")
+            self.panic_btn.style().unpolish(self.panic_btn)
+            self.panic_btn.style().polish(self.panic_btn)
 
         sources = status.get("available_sources") or []
         if not sources and self.source.count() == 0:
@@ -3708,9 +3714,23 @@ class MainWindow(QMainWindow):
             self.warn_label.setText(f"{where}  -  in sync")
             self.warn_label.setStyleSheet(f"color: {MUTED};")
 
+    def _suspended(self) -> bool:
+        """Whether a background tick should do nothing this time.
+
+        A modal dialog runs its own event loop, so these timers keep firing
+        underneath one -- reaching the device and repainting widgets while
+        the user is being asked a question about those same widgets, and
+        while the handler that opened the dialog is still part-way through
+        its own work. Nobody can see the window behind a modal anyway, so
+        there is nothing to update and nothing lost by waiting.
+        """
+        return QApplication.activeModalWidget() is not None
+
     def tick(self):
         """The slow poll: master state, and levels only if nothing faster is
         supplying them."""
+        if self._suspended():
+            return
         try:
             status = self.daemon.status()
         except Exception:                                  # noqa: BLE001
@@ -3760,6 +3780,8 @@ class MainWindow(QMainWindow):
         a second, and the device is busy during an apply or a save, so a
         missed sample is normal and a dialog about it would be intolerable.
         """
+        if self._suspended():
+            return
         try:
             ins, outs = self.daemon.meters()
         except Exception:                                  # noqa: BLE001
@@ -3772,6 +3794,8 @@ class MainWindow(QMainWindow):
 
     def tick_animate(self):
         """Advance every bar's ballistics one frame. No device access."""
+        if self._suspended():
+            return
         for m in self.in_meters:
             m.animate()
         for m in self.out_meters:
@@ -3822,7 +3846,7 @@ class MainWindow(QMainWindow):
     def on_read(self):
         if self.readback is None:
             return
-        self.read_btn.setEnabled(False)
+        self.set_device_busy(True)
         self.statusBar().showMessage("Reading from device...")
         n_out = len(self.project["outputs"])
         n_in = len(self.project["inputs"])
@@ -3868,6 +3892,7 @@ class MainWindow(QMainWindow):
 
     def _read_done(self, result):
         self.progress.hide()
+        self.set_device_busy(False)
         readings, input_readings, stored, stored_error = result
         core.apply_readback(self.project, readings, input_readings)
         self._last_stored = None
@@ -3923,7 +3948,7 @@ class MainWindow(QMainWindow):
 
     def _read_failed(self, msg):
         self.progress.hide()
-        self.read_btn.setEnabled(True)
+        self.set_device_busy(False)
         self.statusBar().showMessage(f"Read failed: {msg}", 8000)
         QMessageBox.warning(self, "Read failed", msg)
 
@@ -4154,15 +4179,53 @@ class MainWindow(QMainWindow):
         neither may start while the other is running."""
         self._writing = busy
         self._enable_writes(not busy)
-        # Meters poll the device from the UI thread and take the same lock a
-        # write holds, so during a save the main thread was blocking on it
-        # every 60 ms for the ten seconds the write ran -- freezing the
-        # window and queueing a burst of timer events behind it. There is
-        # nothing to sample anyway: the device is busy and those reads fail.
-        # The animation keeps running, so the bars decay rather than freeze.
+        self.set_device_busy(busy)
+
+    def set_device_busy(self, busy: bool) -> None:
+        """Hold every other conversation while one is in progress.
+
+        There is a single command endpoint. Anything sent while a read or a
+        write is running interleaves with it, and some of it is worse than
+        noise: the master strip sends immediately rather than waiting for
+        Apply, so a preset change made during a save would move the device
+        to a different slot part-way through storing to the one it was on.
+
+        So the strip goes down with the pollers. That includes MUTE ALL,
+        which is the one real cost -- it is unavailable for the ten seconds
+        a save takes. It sends a command like anything else, and the point
+        here is that nothing does.
+        """
+        self.set_polling(not busy)
+        self.master.setEnabled(not busy)
+        self.read_btn.setEnabled(not busy and self.readback is not None)
         if busy:
+            self.import_preset_btn.setEnabled(False)
+            self.import_chan_btn.setEnabled(False)
+        else:
+            self._import_buttons_state()
+
+    def set_polling(self, on: bool) -> None:
+        """Run the device pollers, or stand them down while it is busy.
+
+        Both pollers ask the device from the UI thread and take the same lock
+        a read or a write holds. While one of those runs -- ten seconds for a
+        save -- the main thread was blocking on that lock every 60 ms,
+        freezing the window and stacking timer events behind it, and there
+        was never anything to sample: the device is busy, so those reads fail
+        and are thrown away.
+
+        The animation timer is deliberately left running. It touches no
+        hardware, and stopping it would freeze the bars mid-decay rather than
+        letting them fall.
+        """
+        if not on:
+            self.poll.stop()
             self.meter_poll.stop()
-        elif self.daemon is not None:
+            return
+        if self.daemon is None:
+            return
+        self.poll.start(500)
+        if hasattr(self.daemon, "meters"):
             self.meter_poll.start(60)
 
     def _enable_writes(self, enabled: bool) -> None:
@@ -4352,9 +4415,7 @@ class MainWindow(QMainWindow):
                 self, "No flash access",
                 "Reading another preset needs the direct USB connection.")
             return
-        for b in (self.import_preset_btn, self.import_chan_btn,
-                  self.read_btn):
-            b.setEnabled(False)
+        self.set_device_busy(True)
         self.statusBar().showMessage(f"Reading preset {index + 1} from "
                                      f"device...")
 
@@ -4367,14 +4428,12 @@ class MainWindow(QMainWindow):
 
         def done(cfg):
             self.progress.hide()
-            self._import_buttons_state()
-            self.read_btn.setEnabled(True)
+            self.set_device_busy(False)
             then(cfg)
 
         def failed(msg):
             self.progress.hide()
-            self._import_buttons_state()
-            self.read_btn.setEnabled(True)
+            self.set_device_busy(False)
             self.statusBar().showMessage(f"Could not read preset "
                                          f"{index + 1}: {msg}", 8000)
 
