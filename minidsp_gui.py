@@ -1810,7 +1810,11 @@ class RoutingTable(QTableWidget):
     """
 
     changed = Signal()
-    COLS = ["To output", "On", "Gain (dB)"]
+    # On first: it is the thing you are setting, and the destination beside
+    # it is what you are setting it for. Reading "on / Out 3" is the order
+    # the decision is made in.
+    COLS = ["On", "To output", "Gain (dB)"]
+    C_ON, C_DEST, C_GAIN = range(len(COLS))
 
     def __init__(self):
         super().__init__(0, len(self.COLS))
@@ -1824,11 +1828,11 @@ class RoutingTable(QTableWidget):
         # room than the number needs, and letting it have that left the
         # destination name -- the column you actually read -- squeezed out.
         hh.setMinimumSectionSize(30)
-        hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.Fixed)
-        hh.setSectionResizeMode(2, QHeaderView.Fixed)
-        self.setColumnWidth(1, 32)
-        self.setColumnWidth(2, 72)
+        hh.setSectionResizeMode(self.C_ON, QHeaderView.Fixed)
+        hh.setSectionResizeMode(self.C_DEST, QHeaderView.Stretch)
+        hh.setSectionResizeMode(self.C_GAIN, QHeaderView.Fixed)
+        self.setColumnWidth(self.C_ON, 32)
+        self.setColumnWidth(self.C_GAIN, 72)
         self.setTextElideMode(Qt.ElideRight)
         self.setSelectionMode(QTableWidget.NoSelection)
         self.routes: list[dict[str, Any]] = []
@@ -1843,23 +1847,18 @@ class RoutingTable(QTableWidget):
             idx = route.get("index", r)
             name = next((o["name"] for o in outputs
                          if o.get("index") == idx), f"Out {idx + 1}")
-            summary = ""
             target = next((o for o in outputs if o.get("index") == idx), None)
-            if target:
-                active = [g for g in target.get("crossover", [])
-                          if g.get("enabled")]
-                if active:
-                    summary = " · " + "/".join(
-                        f"{'HP' if g['mode'] == 'highpass' else 'LP'}"
-                        f"{g['freq']:.0f}" for g in active)
+            # Described exactly as the navigator describes it, so the same
+            # output reads the same way in both places.
+            summary = ((" \u00b7 " + summarise_output(target, True))
+                       if target else "")
 
             item = QTableWidgetItem(name + summary)
-            item.setToolTip(f"{name}{summary.replace(chr(183), '')}".strip()
-                            or name)
+            item.setToolTip(f"{name}{summary}".strip() or name)
             item.setFlags(Qt.ItemIsEnabled)
             if not route.get("enabled"):
                 item.setForeground(QColor(MUTED))
-            self.setItem(r, 0, item)
+            self.setItem(r, self.C_DEST, item)
 
             on = QCheckBox()
             on.setChecked(bool(route.get("enabled")))
@@ -1867,7 +1866,7 @@ class RoutingTable(QTableWidget):
             holder = QWidget(); hl = QHBoxLayout(holder)
             hl.setContentsMargins(0, 0, 0, 0); hl.addWidget(on)
             hl.setAlignment(Qt.AlignCenter)
-            self.setCellWidget(r, 1, holder)
+            self.setCellWidget(r, self.C_ON, holder)
 
             sb = QDoubleSpinBox()
             sb.setRange(-127.0, 12.0); sb.setDecimals(1)
@@ -1879,7 +1878,7 @@ class RoutingTable(QTableWidget):
             sb.setButtonSymbols(QDoubleSpinBox.NoButtons)
             sb.setValue(float(route.get("gain", 0.0)))
             sb.valueChanged.connect(self._emit)
-            self.setCellWidget(r, 2, sb)
+            self.setCellWidget(r, self.C_GAIN, sb)
         self._loading = False
 
     def _emit(self, *_):
@@ -1888,11 +1887,11 @@ class RoutingTable(QTableWidget):
 
     def store(self) -> list[dict[str, Any]]:
         for r, route in enumerate(self.routes):
-            holder = self.cellWidget(r, 1)
+            holder = self.cellWidget(r, self.C_ON)
             if holder is None:
                 continue
             route["enabled"] = holder.findChild(QCheckBox).isChecked()
-            route["gain"] = self.cellWidget(r, 2).value()
+            route["gain"] = self.cellWidget(r, self.C_GAIN).value()
         return self.routes
 
 
@@ -1903,6 +1902,27 @@ def format_hz(f: float) -> str:
     if f >= 1000:
         return f"{f / 1000:.1f}k".replace(".0k", "k")
     return f"{f:.0f}"
+
+
+def summarise_output(out: dict[str, Any], fed: bool = True) -> str:
+    """One line describing what an output is actually doing.
+
+    Shared by the navigator and the routing table so an output is described
+    the same way wherever it is named. Listing an output's filters twice in
+    two different dialects made the same channel look like two channels.
+    """
+    bits = []
+    band = passband(out)
+    if band:
+        bits.append(band)
+    pq = core.count_effective_peq(out.get("peq", []))
+    if pq:
+        bits.append(f"{pq} EQ")
+    if bits:
+        return " · ".join(bits)
+    # No filters at all means two very different things, and the difference
+    # matters when you are looking for a silent driver.
+    return "full range" if fed else "unused"
 
 
 def passband(chan: dict[str, Any]) -> str:
@@ -3238,19 +3258,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _summarise_output(out: dict[str, Any], fed: bool) -> str:
-        """One-line description of what an output is actually doing."""
-        bits = []
-        band = passband(out)
-        if band:
-            bits.append(band)
-        pq = core.count_effective_peq(out.get("peq", []))
-        if pq:
-            bits.append(f"{pq} EQ")
-        if bits:
-            return " · ".join(bits)
-        # No filters at all means two very different things, and the
-        # difference matters when you are looking for a silent driver.
-        return "full range" if fed else "unused"
+        return summarise_output(out, fed)
 
     def _add_header(self, text: str):
         item = QListWidgetItem(text)
