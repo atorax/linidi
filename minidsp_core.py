@@ -1007,10 +1007,26 @@ def default_output(index: int, n_peq: int) -> dict[str, Any]:
 
 
 def default_input(index: int, n_out: int, n_peq: int) -> dict[str, Any]:
+    """A fresh input: routed nowhere.
+
+    This used to send input N straight to output N, which is what the
+    hardware itself does with a slot nobody has configured. On a device
+    wired to a passive speaker that is the dangerous arrangement, not the
+    neutral one: a new project has no crossovers either, so output 1 would
+    carry full-range programme at 0 dB into whatever is on it -- and on a
+    two-way that is the tweeter.
+
+    Every other default here is off: a PEQ band, a crossover group and a
+    compressor all arrive switched out until someone switches them in.
+    Routing was the one exception, and it was the one that could put bass
+    into a driver that cannot take it. A new project is silent now, which
+    is a thing you notice and fix in seconds, rather than loud, which is a
+    thing you notice once.
+    """
     return {"index": index, "name": f"In {index + 1}", "gain": 0.0,
             "mute": False,
             "peq": [default_peq_band(i, n_peq) for i in range(n_peq)],
-            "routing": [{"index": o, "enabled": o == index, "gain": 0.0}
+            "routing": [{"index": o, "enabled": False, "gain": 0.0}
                         for o in range(n_out)]}
 
 
