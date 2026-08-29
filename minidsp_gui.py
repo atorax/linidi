@@ -3631,6 +3631,12 @@ class MainWindow(QMainWindow):
         holder2 = QWidget(); holder2.setLayout(body)
         root.addWidget(holder2, 1)
         self.setCentralWidget(central)
+        # The device layer refuses a write that would strip a crossover off
+        # a live output unless something can ask about it. This is that
+        # something. A script talking to the device directly installs no
+        # handler and so gets the refusal, which is the point: the guard
+        # used to live here and every test script went around it.
+        native.set_confirm_handler(self._confirm_dangerous)
         self.setStatusBar(QStatusBar())
         # Flash reads take seconds and the layer underneath has always
         # reported how far along it is; nothing ever displayed it.
@@ -4383,23 +4389,6 @@ class MainWindow(QMainWindow):
         # Checked against what the device actually holds, not against what
         # the app last thought, because an import replaces the project
         # wholesale.
-        lost = self._crossovers_lost()
-        if lost:
-            shown = "\n".join(f"  \u2022 {t}" for t in lost)
-            box = QMessageBox(self)
-            box.setIcon(QMessageBox.Warning)
-            box.setWindowTitle("This would remove a crossover")
-            box.setText(
-                f"These outputs are unmuted and fed, and this write takes "
-                f"a filter out of circuit on them:\n\n{shown}\n\n"
-                "Without a high-pass they carry full range.")
-            go = box.addButton("Continue", QMessageBox.AcceptRole)
-            box.addButton("Cancel", QMessageBox.RejectRole)
-            box.setDefaultButton(box.buttons()[-1])
-            box.exec()
-            if box.clickedButton() is not go:
-                return False
-
         if not self.have_read:
             resp = QMessageBox.warning(
                 self, "Overwrite device configuration?",
@@ -4417,59 +4406,17 @@ class MainWindow(QMainWindow):
                 return False
         return True
 
-    def _crossovers_lost(self) -> list[str]:
-        """Outputs whose crossover is in circuit now and would not be after.
-
-        Asks the device rather than trusting the project: an import replaces
-        the whole project, so the app's own idea of the previous state is
-        exactly what cannot be relied on here.
-
-        Says nothing if the device cannot be asked -- a guard that fires on
-        not knowing would block every write over the daemon.
-
-        And says nothing about an output that will be muted or unrouted
-        after this write. The danger is signal reaching a driver without a
-        filter in front of it, not the filter leaving on its own: clearing
-        the crossovers out of a preset whose outputs are silent cannot hurt
-        anything, and refusing to let that happen made the ordinary job of
-        wiping an unused preset impossible. A guard that cannot tell the
-        difference between the dangerous case and the routine one is not
-        protecting anybody; it is just in the way.
-        """
-        native = self.daemon if hasattr(self.daemon,
-                                        "stored_config") else None
-        if native is None or self.project is None:
-            return []
-        try:
-            preset = int(self.daemon.status()["master"]["preset"])
-            stored = native.stored_config(preset)
-        except Exception:                                  # noqa: BLE001
-            return []
-        lost = []
-        mine = {c["index"]: c for c in self.project.get("outputs", [])}
-        fed = self._outputs_fed()
-        for ch in stored.get("outputs", []):
-            out = mine.get(ch["index"])
-            if out is None:
-                continue
-            # Only outputs that will still carry signal after this write can
-            # hurt anything. A crossover coming out of a muted output, or one
-            # nothing is routed to, reaches no driver -- and refusing there
-            # blocks the ordinary job of clearing a preset you are not using,
-            # which is not protection, it is just refusal.
-            if bool(out.get("mute")) or ch["index"] not in fed:
-                continue
-            for g in ch.get("crossover", []):
-                if g.get("bypass") is not False or not g.get("active"):
-                    continue          # not in circuit on the device
-                gi = g["index"]
-                here = next((x for x in out.get("crossover", [])
-                             if x.get("index") == gi), None)
-                if here is None or not here.get("enabled"):
-                    name = out.get("name", f"Out {ch['index'] + 1}")
-                    lost.append(f"{name}: {g.get('mode')} at "
-                                f"{g.get('freq')} Hz would be switched off")
-        return lost
+    def _confirm_dangerous(self, title: str, detail: str) -> bool:
+        """Put a dangerous write to the person about to make it."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(title)
+        box.setText(detail)
+        go = box.addButton("Continue", QMessageBox.AcceptRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(box.buttons()[-1])
+        box.exec()
+        return box.clickedButton() is go
 
     def on_apply(self):
         """Write the edits to working memory, so they can be heard.
@@ -4488,12 +4435,26 @@ class MainWindow(QMainWindow):
         # every output a little, every time.
         project = copy.deepcopy(self.project)
         self.tasks.run(
-            lambda: core.apply_project(self.daemon, project,
-                                       readback=self.readback),
+            lambda: core.apply_project(
+                self.daemon, project, readback=self.readback,
+                fir_progress=lambda d, t: self.read_progress.emit(d, t)),
             on_done=self._apply_done, on_error=self._write_failed)
+
+    def _clear_fir_pending(self) -> None:
+        """A filter that has been written is no longer waiting to be.
+
+        Cleared on the project rather than on the payload, because the
+        payload was a copy: leaving it set means every later Apply resends
+        two thousand coefficients nobody asked for again.
+        """
+        for inp in (self.project or {}).get("inputs", []):
+            fir = inp.get("fir")
+            if fir and fir.get("taps"):
+                fir["pending"] = False
 
     def _apply_done(self, _):
         self._set_writing(False)
+        self._clear_fir_pending()
         self.dirty = False
         # Working memory now matches the project; the stored preset does not,
         # and saying so is the whole point of the second lamp.
@@ -4539,8 +4500,9 @@ class MainWindow(QMainWindow):
         payload = core.build_config_payload(copy.deepcopy(self.project))
 
         def work():
-            applied = core.apply_project(self.daemon, project,
-                                         readback=self.readback)
+            applied = core.apply_project(
+                self.daemon, project, readback=self.readback,
+                fir_progress=lambda d, t: self.read_progress.emit(d, t))
             # Store what had to be written, not what was asked for. The
             # device rounds a gain down when it applies one, and it does the
             # same when it loads a preset at power-on -- so storing the
@@ -4560,6 +4522,7 @@ class MainWindow(QMainWindow):
     def _save_device_done(self, stats):
         self.progress.hide()
         self._set_writing(False)
+        self._clear_fir_pending()
         self.dirty = False
         self.stored_current = True
         self.save_project()

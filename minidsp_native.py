@@ -86,6 +86,40 @@ def open_device(map_name: str | None = None, product_id: int | None = None,
     return NativeDevice(amap, connection=dev, info=info)
 
 
+# Asked before a write that would take a crossover out of circuit on an
+# output still carrying signal. Set by whatever can put the question to a
+# person; when nothing has, the answer is no.
+#
+# This lives here rather than in the window because the window is not the
+# only way to reach the device. Every test script, every one-off probe,
+# talks to this layer directly -- and a guard that only exists in the UI is
+# one that every script goes around. That is not hypothetical: a script
+# doing exactly that wrote default 80 Hz crossovers over a pair of
+# tweeters, with the amplifiers live.
+_CONFIRM_DANGEROUS = None
+
+
+def set_confirm_handler(fn) -> None:
+    """Install something that can ask before a dangerous write.
+
+    `fn(title, detail)` returns True to go ahead. A caller with no handler
+    installed cannot ask, so the write is refused and says how to allow it
+    -- which makes permitting one a deliberate line of code rather than a
+    thing that happens because nobody was looking.
+    """
+    global _CONFIRM_DANGEROUS
+    _CONFIRM_DANGEROUS = fn
+
+
+def _ask_dangerous(title: str, detail: str) -> bool:
+    if _CONFIRM_DANGEROUS is None:
+        raise mp.ProtocolError(
+            f"{title}\n\n{detail}\n\nNothing here can ask whether that "
+            f"is intended, so it was not written. A caller that means it "
+            f"can say so with minidsp_native.set_confirm_handler().")
+    return bool(_CONFIRM_DANGEROUS(title, detail))
+
+
 class NativeDevice:
     """One miniDSP, driven directly.
 
@@ -448,7 +482,45 @@ class NativeDevice:
             if "preset" in fields:
                 self._dev.set_preset(int(fields["preset"]))
 
-    def set_config(self, payload: dict[str, Any]) -> None:
+    def _crossovers_at_risk(self, payload: dict[str, Any]) -> list[str]:
+        """Outputs this payload would leave carrying signal unfiltered.
+
+        Compares against the crossover coefficients the device is running,
+        which do read back. An output that has a real filter now, would
+        have none after, and is still fed and unmuted, is the one shape on
+        this hardware that destroys something.
+
+        Says nothing about an output that will be muted or unrouted: no
+        signal reaches a driver there, and refusing that would block the
+        ordinary business of clearing a preset.
+        """
+        fed = {r["index"] for inp in payload.get("inputs", [])
+               for r in inp.get("routing", []) if r.get("enabled")}
+        at_risk = []
+        for out in payload.get("outputs", []):
+            idx = out["index"]
+            if idx not in fed or out.get("mute"):
+                continue
+            wants = any(_group_filters(g) for g in out.get("crossover", []))
+            if wants:
+                continue
+            spec = self.amap.outputs[idx]
+            live = False
+            for base in spec.get("xover_groups", []):
+                vals = self._floats(base, XOVER_SLOTS * BIQUAD_FLOATS)
+                for k in range(XOVER_SLOTS):
+                    bq = vals[k * BIQUAD_FLOATS:(k + 1) * BIQUAD_FLOATS]
+                    if any(abs(a - b) > 1e-6 for a, b in zip(bq, _UNITY)):
+                        live = True
+                        break
+                if live:
+                    break
+            if live:
+                at_risk.append(out.get("name") or f"Out {idx + 1}")
+        return at_risk
+
+    def set_config(self, payload: dict[str, Any],
+                   fir_progress: Any = None) -> None:
         """Apply a project payload, in the shape the app already builds.
 
         A mixer cell's on/off gate is written only where the address map
@@ -460,6 +532,13 @@ class NativeDevice:
         gates, meaning a routing change would have muted channels instead.
         """
         self._check_payload(payload)
+        risk = self._crossovers_at_risk(payload)
+        if risk and not _ask_dangerous(
+                "This would leave a driver unfiltered",
+                f"{', '.join(risk)} would carry full range after this "
+                f"write, and each is unmuted and fed. If a tweeter is on "
+                f"one of them, that destroys it."):
+            raise mp.ProtocolError("write cancelled")
         with self._lock:
             for out in payload.get("outputs", []):
                 spec = self.amap.outputs[out["index"]]
@@ -513,6 +592,17 @@ class NativeDevice:
                 for route in inp.get("routing", []):
                     self._set_route(inp["index"], route)
 
+        # Outside that lock, because write_fir takes it for itself and this
+        # one is not reentrant -- doing it inside deadlocks the worker and
+        # the window with it. Last, so a filter that fails to land leaves
+        # everything before it applied.
+        for inp in payload.get("inputs", []):
+            fir = inp.get("fir")
+            if fir and fir.get("taps"):
+                self.write_fir(inp["index"], fir["taps"],
+                               enabled=bool(fir.get("enabled")),
+                               progress=fir_progress)
+
     @staticmethod
     def _phases(cb: Any, count: int, each: int):
         """Turn several byte-counted round trips into one progress line.
@@ -557,6 +647,13 @@ class NativeDevice:
             against a constant, which cannot tell whether the preset arrived.
         """
         self._check_payload(payload)
+        risk = self._crossovers_at_risk(payload)
+        if risk and not _ask_dangerous(
+                "This would leave a driver unfiltered",
+                f"{', '.join(risk)} would carry full range after this "
+                f"write, and each is unmuted and fed. If a tweeter is on "
+                f"one of them, that destroys it."):
+            raise mp.ProtocolError("write cancelled")
         active = int(self.status()["master"]["preset"])
         slots = self.preset_slots()
         if not 0 <= active < len(slots):
@@ -838,6 +935,32 @@ class NativeDevice:
 BIQUAD_FLOATS = 5
 
 GATE_MUTED, GATE_PASSING = 1, 2
+
+# A biquad that does nothing: the shape a crossover slot holds when there
+# is no filter in it.
+_UNITY = [1.0, 0.0, 0.0, 0.0, 0.0]
+
+
+def _is_unity(bq: Any) -> bool:
+    """Whether one biquad passes its input through untouched."""
+    try:
+        vals = _coeff_list(bq)
+    except Exception:                                  # noqa: BLE001
+        return True          # nothing usable in it is nothing filtering
+    return all(abs(a - b) <= 1e-6 for a, b in zip(vals, _UNITY))
+
+
+def _group_filters(group: dict[str, Any]) -> bool:
+    """Whether a payload's crossover group would filter anything.
+
+    A group is four biquad slots. It filters if it is not bypassed and at
+    least one slot holds something other than a pass-through -- which is
+    what a group looks like when its filter has been switched off, since
+    the slots keep their coefficients and only the bypass flag moves.
+    """
+    if group.get("bypass"):
+        return False
+    return any(not _is_unity(bq) for bq in (group.get("coeff") or []))
 
 # A compressor's on/off field, which does not use the 1/2 gate convention.
 # From Device Console's own audioProcessingDefn: bypass ? 0x3 : 0x2, and it

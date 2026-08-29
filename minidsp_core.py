@@ -1380,6 +1380,16 @@ def build_config_payload(project: dict[str, Any]) -> dict[str, Any]:
                          "gain": float(r.get("gain", 0.0))}
                         for r in inp.get("routing", [])],
         })
+        # A FIR filter rides along only when there is one to send and it
+        # has not been sent. Two thousand and forty-eight coefficients is a
+        # hundred and forty-seven packets a channel, so including it every
+        # time would make every Apply pay for a filter nobody touched --
+        # and an input with no taps loaded must not wipe the one already on
+        # the device.
+        fir = inp.get("fir") or {}
+        if fir.get("taps") and fir.get("pending"):
+            inputs[-1]["fir"] = {"taps": list(fir["taps"]),
+                                 "enabled": bool(fir.get("enabled"))}
     return {"inputs": inputs, "outputs": outputs}
 
 
@@ -2152,7 +2162,8 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
 def apply_project(daemon: "Daemon", project: dict[str, Any],
                   readback: "Readback | None" = None,
                   verify_gains: bool = True,
-                  tol: float = 0.05) -> dict[str, Any]:
+                  tol: float = 0.05,
+                  fir_progress: Any = None) -> dict[str, Any]:
     """Push a project to the device, correcting gain quantisation.
 
     Verification used to be opt-in, on the reasoning that a gain which came
@@ -2173,9 +2184,15 @@ def apply_project(daemon: "Daemon", project: dict[str, Any],
     round-trips per output.
     """
     payload = build_config_payload(project)
-    daemon.set_config(payload)
-    result: dict[str, Any] = {"outputs": len(payload["outputs"]),
-                              "corrected": [], "gain_requests": {}}
+    try:
+        daemon.set_config(payload, fir_progress=fir_progress)
+    except TypeError:
+        # Over the daemon there is no FIR path and no such argument.
+        daemon.set_config(payload)
+    result: dict[str, Any] = {
+        "outputs": len(payload["outputs"]), "corrected": [],
+        "gain_requests": {},
+        "fir": [i["index"] for i in payload["inputs"] if "fir" in i]}
     if not (verify_gains and readback):
         return result
 
