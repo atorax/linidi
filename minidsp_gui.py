@@ -3004,6 +3004,58 @@ class RewDialog(QDialog):
 
 
 
+class BusyDialog(QDialog):
+    """What the device is doing, while the window is held for it.
+
+    Shown, never exec()'d. exec() runs a nested event loop, which is a
+    second place for timers to be dispatched from and was the context one of
+    this app's segfaults landed in. show() on a modal dialog blocks input to
+    the rest of the window without one.
+
+    No buttons. Nothing here can be cancelled: a flash write stopped halfway
+    leaves a preset that is neither what it was nor what it was going to be,
+    and there is no way to ask the device to undo the blocks already sent.
+    Saying so with an absent button is better than offering one that lies.
+    """
+
+    def __init__(self, parent, title: str):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        # No close button: the dialog goes away when the work does.
+        self.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint
+                            | Qt.WindowTitleHint)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+        self.label = QLabel(title)
+        self.label.setWordWrap(True)
+        lay.addWidget(self.label)
+        self.bar = QProgressBar()
+        # Indeterminate until something reports a byte count. Several
+        # phases here have none to report -- the live parameter reads, the
+        # gain verification loop -- and a bar inventing a percentage for
+        # those would be worse than one that just says "working".
+        self.bar.setRange(0, 0)
+        self.bar.setTextVisible(False)
+        lay.addWidget(self.bar)
+        self.note = QLabel("The window is held until this finishes.")
+        self.note.setObjectName("muted")
+        lay.addWidget(self.note)
+        self.setFixedWidth(380)
+
+    def set_progress(self, done: int, total: int) -> None:
+        if total <= 0:
+            self.bar.setRange(0, 0)
+            return
+        self.bar.setRange(0, total)
+        self.bar.setValue(done)
+
+    def closeEvent(self, event):
+        """Only closable from code -- there is nothing to cancel."""
+        event.ignore()
+
+
 class ImportDialog(QDialog):
     """Pick a source to import from. The destination is where you already are.
 
@@ -3204,6 +3256,9 @@ class MainWindow(QMainWindow):
         # false because nothing is known before a read, and a lamp that
         # claims "stored" without having looked is worse than no lamp.
         self.stored_current = False
+        # The dialog raised while the device is busy, so a second operation
+        # cannot stack another one on top of the first.
+        self._busy_dlg: "BusyDialog | None" = None
         # The last read's comparison of running against stored: what was
         # compared, what could not be, and what differed. None before a read.
         self._live_vs_stored = None
@@ -3963,7 +4018,7 @@ class MainWindow(QMainWindow):
     def on_read(self):
         if self.readback is None:
             return
-        self.set_device_busy(True)
+        self.set_device_busy(True, "Reading the device")
         self.statusBar().showMessage("Reading from device...")
         n_out = len(self.project["outputs"])
         n_in = len(self.project["inputs"])
@@ -4216,7 +4271,7 @@ class MainWindow(QMainWindow):
         """
         if not self._write_preflight():
             return
-        self._set_writing(True)
+        self._set_writing(True, "Applying edits to the device")
         self.statusBar().showMessage("Applying edits...")
         # Gain writes are always verified. The device snaps gain to a linear
         # grid, not to the nearest step, so writing back the value it just
@@ -4268,7 +4323,8 @@ class MainWindow(QMainWindow):
                 return
             self._warned_store = True
 
-        self._set_writing(True)
+        self._set_writing(True, "Applying edits, then storing them "
+                          "in the device's flash")
         self.statusBar().showMessage("Applying and storing edits...")
         project = copy.deepcopy(self.project)
         payload = core.build_config_payload(copy.deepcopy(self.project))
@@ -4312,14 +4368,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Write failed: {msg}", 10000)
         QMessageBox.warning(self, "Write to device failed", msg)
 
-    def _set_writing(self, busy: bool) -> None:
+    def _set_writing(self, busy: bool, what: str = "") -> None:
         """Mark a write in flight. Both go down the one command endpoint, so
         neither may start while the other is running."""
         self._writing = busy
         self._enable_writes(not busy)
-        self.set_device_busy(busy)
+        self.set_device_busy(busy, what)
 
-    def set_device_busy(self, busy: bool) -> None:
+    def set_device_busy(self, busy: bool, what: str = "") -> None:
         """Hold every other conversation while one is in progress.
 
         There is a single command endpoint. Anything sent while a read or a
@@ -4354,7 +4410,17 @@ class MainWindow(QMainWindow):
         central = self.centralWidget()
         if central is not None:
             central.setEnabled(not busy)
-        if not busy:
+        if busy:
+            # A greyed window on its own says something is wrong at least as
+            # readily as it says something is happening. This says which.
+            if self._busy_dlg is None:
+                self._busy_dlg = BusyDialog(self, what or "Working")
+                self._busy_dlg.show()
+        else:
+            if self._busy_dlg is not None:
+                self._busy_dlg.accept()
+                self._busy_dlg.deleteLater()
+                self._busy_dlg = None
             self._import_buttons_state()
             self.read_btn.setEnabled(self.readback is not None)
 
@@ -4522,6 +4588,8 @@ class MainWindow(QMainWindow):
             f"Imported {applied} biquad(s){extra}", 6000)
 
     def _on_progress(self, done: int, total: int) -> None:
+        if self._busy_dlg is not None:
+            self._busy_dlg.set_progress(done, total)
         if total <= 0 or done >= total:
             self.progress.hide()
             return
@@ -4569,7 +4637,8 @@ class MainWindow(QMainWindow):
                 self, "No flash access",
                 "Reading another preset needs the direct USB connection.")
             return
-        self.set_device_busy(True)
+        self.set_device_busy(True, f"Reading preset {index + 1} out of "
+                                   f"the device's flash")
         self.statusBar().showMessage(f"Reading preset {index + 1} from "
                                      f"device...")
 
