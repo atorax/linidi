@@ -1113,22 +1113,22 @@ class CompressorPanel(QGroupBox):
 
     changed = Signal()
 
-    # Ranges are not published anywhere we can read, and five of the fields
-    # cannot be read back to probe them, so these are conventional limits
-    # wide enough to cover anything the vendor's own editor offers. The
-    # values a Flex 8 ships with -- 4:1, 20 dB knee, 40 ms, 100 ms -- all sit
-    # comfortably inside them.
+    # Ranges are not published anywhere we can read, and four of these
+    # cannot be read back to probe them, so they are conventional limits wide
+    # enough to cover anything the vendor's own editor offers. The values a
+    # Flex 8 ships with -- 4:1, 40 ms, 100 ms -- sit comfortably inside them.
     #
-    # Knee is the odd one out: the DSP accepts the write and ignores it. Four
-    # outputs given the same signal at the same instant, with knees of 0, 12,
-    # 24 and 40, all reported the same gain reduction to the last digit. It
-    # is kept here only so the value the preset carries can still be seen.
+    # There is no knee here on purpose. The field exists, the DSP accepts the
+    # write, and it changes nothing: four outputs given the same signal at
+    # the same instant, with knees of 0, 12, 24 and 40, reported the same
+    # gain reduction to the last digit. A control that cannot affect anything
+    # is not a control, so the preset keeps carrying the value and the UI
+    # does not offer it.
     FIELDS = (
         ("threshold", "Threshold", -90.0, 0.0, 1, 0.5, " dB"),
         ("ratio", "Ratio", 1.0, 100.0, 1, 0.5, ":1"),
         ("attack", "Attack", 0.1, 1000.0, 1, 1.0, " ms"),
         ("release", "Release", 1.0, 5000.0, 1, 10.0, " ms"),
-        ("knee", "Knee", 0.0, 40.0, 1, 1.0, " dB"),
         ("makeup", "Makeup", -20.0, 20.0, 2, 0.5, " dB"),
     )
 
@@ -1188,10 +1188,10 @@ class CompressorPanel(QGroupBox):
                 sb.setValue(float(self.data[key]))
         src = self.data.get("bypass_source")
         self.note.setText(
-            "Ratio, knee, attack and release do not read back from the "
+            "Makeup, ratio, attack and release do not read back from the "
             "device. These came from its stored preset."
             if src == "device" else
-            "Ratio, knee, attack and release do not read back from the "
+            "Makeup, ratio, attack and release do not read back from the "
             "device, so these are this project's values, not measured ones.")
         self._loading = False
 
