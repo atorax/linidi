@@ -37,7 +37,7 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import requests
 
@@ -499,6 +499,155 @@ def identify_alignment(sections: list[tuple[float, float]]) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 
 _REW_COEF = re.compile(r"^\s*([ab][012])\s*=\s*(-?[\d.eE+-]+)\s*,?\s*$")
+
+
+# Where a comment starts in a coefficient file. rePhase writes none,
+# Acourate and DRC-FIR write headers, and hand-edited files pick up all of
+# these, so all of them are honoured.
+_TAP_COMMENT = re.compile(r"[#;*]|//")
+# Anything that separates two numbers on one line: whitespace, comma,
+# semicolon. Some exporters put the whole filter on a single line.
+_TAP_SPLIT = re.compile(r"[\s,;]+")
+
+
+def parse_fir_taps(data: bytes, name: str = "",
+                   width: int | None = None) -> list[float]:
+    """Read a FIR coefficient file, in whichever shape it arrived.
+
+    There is no standard here. rePhase writes one decimal per line,
+    Acourate and DRC-FIR can write either text or raw little-endian floats,
+    REW writes text, and anything hand-made picks up comments and blank
+    lines on the way. So the shape is worked out from the bytes rather than
+    demanded of the user.
+
+    Binary is detected by content, not by extension: a file naming itself
+    .txt while holding raw floats is a real thing, and so is the reverse.
+    A NUL byte settles it -- no text export contains one.
+
+    Binary width is taken from the strongest evidence there is: an
+    explicit `width`, then the file's extension, then a length that divides
+    evenly for only one of them. When none of those settle it -- and they
+    often will not, since every length that suits 64-bit also suits 32-bit
+    -- it raises AmbiguousFirWidth carrying both readings, for the caller
+    to ask. It does not guess from the numbers; see _parse_fir_binary.
+    """
+    if b"\x00" in data[:4096]:
+        return _parse_fir_binary(data, name, width)
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = data.decode("latin-1")
+        except Exception as exc:                       # noqa: BLE001
+            raise ValueError(
+                f"{name or 'that file'} is neither text nor a whole number "
+                f"of binary floats ({exc})") from exc
+
+    # A byte-order mark is stripped by the codec when it leads the file,
+    # and is just a character anywhere else -- which is where it lands in a
+    # file that has been concatenated, re-saved, or exported twice. It
+    # means nothing in a list of numbers wherever it appears.
+    text = text.replace("\ufeff", "")
+
+    taps: list[float] = []
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        line = _TAP_COMMENT.split(raw, 1)[0].strip()
+        if not line:
+            continue
+        for piece in _TAP_SPLIT.split(line):
+            if not piece:
+                continue
+            try:
+                taps.append(float(piece))
+            except ValueError:
+                # A header line of words is ordinary and is skipped. A line
+                # that is mostly numbers with one bad entry is not, because
+                # dropping it silently shortens the filter.
+                if any(c.isdigit() for c in piece):
+                    raise ValueError(
+                        f"{name or 'that file'} line {lineno}: "
+                        f"{piece!r} is not a number") from None
+                break
+    if not taps:
+        raise ValueError(
+            f"{name or 'that file'} holds no coefficients")
+    return taps
+
+
+# Extensions that name their own width. Anything else is worked out.
+_FIR_WIDTH_BY_EXT = {".dbl": 8, ".f64": 8, ".double": 8,
+                     ".f32": 4, ".flt": 4, ".float": 4}
+
+
+class AmbiguousFirWidth(ValueError):
+    """A binary file that reads as either width, with nothing to choose by.
+
+    Carries both readings so a caller can put the question to whoever has
+    the file, which is the only place the answer actually exists.
+    """
+
+    def __init__(self, message: str, options: list[tuple[int, int]]):
+        super().__init__(message)
+        self.options = options
+
+
+def _parse_fir_binary(data: bytes, name: str = "",
+                      width: int | None = None) -> list[float]:
+    """Raw little-endian floats, at whichever width the evidence supports."""
+    def read(w: int) -> list[float]:
+        code = "f" if w == 4 else "d"
+        return list(struct.unpack(f"<{len(data) // w}{code}", data))
+
+    fits = [w for w in (4, 8) if len(data) % w == 0 and len(data) >= w]
+    if not fits:
+        raise ValueError(
+            f"{name or 'that file'} is {len(data)} bytes, which is not a "
+            f"whole number of 32-bit or 64-bit floats")
+
+    if width is not None:
+        if width not in fits:
+            raise ValueError(
+                f"{name or 'that file'} is {len(data)} bytes, which is not "
+                f"a whole number of {width * 8}-bit floats")
+        return read(width)
+
+    ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    hinted = _FIR_WIDTH_BY_EXT.get(ext)
+    if hinted in fits:
+        return read(hinted)
+
+    if len(fits) == 1:
+        return read(fits[0])
+
+    # No guessing from here. A first attempt scored the two readings on
+    # whether the numbers looked like a filter, and a perfectly ordinary
+    # 2048-tap 32-bit file read as 1024 64-bit values that were finite,
+    # smooth and small -- it passed. Tightening the thresholds until that
+    # one case failed would have been fitting the rule to the example.
+    #
+    # Nothing in the bytes says which width they are. The person holding
+    # the file knows, so the question goes to them.
+    raise AmbiguousFirWidth(
+        f"{name or 'That file'} is {len(data)} bytes, which is "
+        f"{len(data) // 4} coefficients at 32-bit or {len(data) // 8} at "
+        f"64-bit. Nothing in the file says which, and read at the wrong "
+        f"width it comes out as a filter rather than as an error.",
+        [(4, len(data) // 4), (8, len(data) // 8)])
+
+
+def describe_fir_taps(taps: Sequence[float]) -> dict[str, Any]:
+    """What a loaded filter looks like, for saying so before it is written.
+
+    Peak magnitude is the one worth showing. A filter whose taps exceed 1
+    can still be correct -- it is a convolution, not a gain -- but it is
+    also what a file scaled for a different convention looks like, and the
+    difference matters before it reaches a driver rather than after.
+    """
+    peak = max((abs(v) for v in taps), default=0.0)
+    return {"count": len(taps), "peak": peak,
+            "sum": sum(taps),
+            "nonzero": sum(1 for v in taps if v != 0.0),
+            "finite": all(math.isfinite(v) for v in taps)}
 
 
 def parse_rew_biquads(text: str) -> list[dict[str, float]]:
