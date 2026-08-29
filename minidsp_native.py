@@ -660,6 +660,85 @@ class NativeDevice:
                     put_int(gates[dest], _gate(not route.get("enabled")))
         return words, flags
 
+    def fir_capacity(self, index: int) -> int:
+        """How many taps input `index`'s FIR block will hold."""
+        with self._lock:
+            return self._dev.get_num_fir_taps(index)
+
+    def read_fir(self, index: int, count: int | None = None
+                 ) -> dict[str, Any]:
+        """One FIR block, read from the device.
+
+        The coefficients genuinely read back, which no other filter on this
+        hardware does: a PEQ biquad answers five zeros however it is set,
+        while these come back exactly as written. So a FIR is the one filter
+        here that can be verified rather than trusted.
+
+        The two scalars beside them do not. `taps` reads 0 whatever it holds
+        and `enable` reads 1 whatever it is set to, so both come from the
+        stored preset, the same way the compressor's settings do.
+        """
+        spec = self.amap.inputs[index].get("fir")
+        if not spec:
+            raise mp.ProtocolError(f"input {index + 1} has no FIR block")
+        want = count if count is not None else self.fir_capacity(index)
+        out: dict[str, Any] = {"index": index, "capacity": want}
+        with self._lock:
+            out["coeff"] = self._floats(spec["coeffs"], want)
+        return out
+
+    def write_fir(self, index: int, taps: Sequence[float],
+                  enabled: bool = False,
+                  progress: Any = None) -> dict[str, Any]:
+        """Load a filter into one input's FIR block.
+
+        The order is Device Console's, with one deliberate difference.
+
+        Theirs writes the status field first, carrying the value it means to
+        end on, and only then the tap count and the taps. So enabling a
+        filter walks the device through a window where the block is live and
+        its coefficients are half written. That is the same shape as their
+        compressor write, and here it is worse than a bad noise: switching a
+        FIR on against an incoherent tap count stopped this DSP answering
+        parameter reads or writes at all, and it took a preset change to get
+        it back.
+
+        So the block is bypassed for the whole write and switched on at the
+        end, after the reload, if that is what was asked for.
+
+        Taps go by WriteFirTapsToFlash, never by a parameter write. The
+        coefficient addresses accept one and read it back, which makes the
+        wrong thing look like it worked; the device does its own bookkeeping
+        around that memory and a filter poked into it directly is not one
+        the DSP has been told about.
+        """
+        spec = self.amap.inputs[index].get("fir")
+        if not spec:
+            raise mp.ProtocolError(f"input {index + 1} has no FIR block")
+        taps = list(taps)
+        capacity = self.fir_capacity(index)
+        if len(taps) > capacity:
+            raise mp.ProtocolError(
+                f"input {index + 1}'s FIR holds {capacity} taps and "
+                f"{len(taps)} were offered. The device would take the first "
+                f"{capacity} and drop the rest, which is a different filter, "
+                f"so nothing was written.")
+        if not taps:
+            raise mp.ProtocolError("a FIR needs at least one tap")
+
+        sent = 0
+        with self._lock:
+            self._dev.write_int(spec["enable"], FIR_BYPASSED)
+            self._dev.write_float(spec["taps"], float(len(taps)))
+            while sent < len(taps):
+                sent += self._dev.write_fir_taps(index, taps[sent:])
+                if progress is not None:
+                    progress(sent, len(taps))
+            self._dev.reload_dsp_param()
+            if enabled:
+                self._dev.write_int(spec["enable"], FIR_ENABLED)
+        return {"index": index, "taps": sent, "enabled": bool(enabled)}
+
     def _write_compressor(self, spec: dict[str, Any],
                           out: dict[str, Any]) -> None:
         """One output's compressor, switched off while it is changed.
@@ -750,6 +829,10 @@ GATE_MUTED, GATE_PASSING = 1, 2
 # this address return 1 on every output regardless, so a read that is neither
 # 3 nor 2 is discarded rather than guessed at.
 COMP_BYPASSED, COMP_ENABLED = 3, 2
+
+# A FIR block's on/off field, which uses the same encoding the compressor's
+# does and reads back the same way: 1, whatever it was set to.
+FIR_BYPASSED, FIR_ENABLED = 3, 2
 
 # The order these are written in matters, so it is stated once. Everything
 # the compressor computes with goes down before it is switched on, and it is

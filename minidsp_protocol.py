@@ -55,7 +55,7 @@ from __future__ import annotations
 import struct
 import time
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Sequence
 
 try:
     import hid
@@ -136,7 +136,17 @@ READ_ECHO_BYTES = {
     CMD_READ_FLASH: 2,
     CMD_READ_DSP_PARAM: 2,
     CMD_READ_FLASH_FULL_ADDR: 3,
+    # The tap-count reply echoes nothing but the command, so there is no
+    # argument prefix to match against; one byte of echo would be the
+    # command byte the framing already checks.
 }
+
+# Taps carried by one WriteFirTapsToFlash. Device Console caps its own
+# packets at this and truncates anything longer, which is what makes the
+# reply's count meaningful: it says how many of the ones offered were
+# taken. Fourteen float32 is 56 bytes, which is what fits alongside the
+# command and channel bytes in a 64-byte report.
+MAX_FIR_TAPS_PER_PACKET = 14
 
 # How long to wait for a write to be acknowledged, and how many unacknowledged
 # writes in a row mean the device has stopped listening rather than merely
@@ -713,6 +723,49 @@ class MiniDSP:
         self.command(CMD_LOAD_DSP_PARAM,
                      bytes([mode]) + addr_bytes(addr)
                      + struct.pack("<f", float(value)))
+
+    def get_num_fir_taps(self, index: int) -> int:
+        """How many taps this FIR block can hold.
+
+        A capacity, not an occupancy: a Flex 8 answers 2048 for either block
+        whatever is loaded in them. Device Console asks this before writing
+        and refuses the whole operation if the answer is smaller than the
+        filter, which is the only bounds check the tap path gets -- the
+        write command itself silently truncates.
+        """
+        body = self.exchange(CMD_GET_NUM_FIR_TAPS, bytes([index & 0xFF]))
+        if len(body) < 3:
+            raise ProtocolError(
+                f"the tap-count reply for FIR {index} was {len(body)} bytes, "
+                f"which is too short to carry a count")
+        return int.from_bytes(body[1:3], "big")
+
+    def write_fir_taps(self, index: int, taps: Sequence[float]) -> int:
+        """Send one packet of taps, and say how many went.
+
+        There is no offset on the wire. The device keeps its own cursor for
+        the block and answers with the number it accepted, so the caller
+        advances by that and sends the rest -- which is how Device Console
+        does it. Anything past the packet limit is dropped here rather than
+        by the device, so the count returned is always one this side chose.
+        """
+        chunk = list(taps)[:MAX_FIR_TAPS_PER_PACKET]
+        if not chunk:
+            return 0
+        payload = bytes([index & 0xFF]) + b"".join(
+            struct.pack("<f", float(v)) for v in chunk)
+        self.command(CMD_WRITE_FIR_TAPS_TO_FLASH, payload)
+        return len(chunk)
+
+    def reload_dsp_param(self) -> None:
+        """Tell the DSP to pick up what was written.
+
+        Issued once after a whole filter is in. Coefficients written without
+        it are in the device and not in the running program, and switching
+        the block on in that state stopped this DSP answering parameter
+        commands at all until a preset change reloaded it.
+        """
+        self.command(CMD_RELOAD_DSP_PARAM, b"")
 
     def write_int(self, addr: int, value: int,
                   mode: int = MODE_APPLY) -> None:
