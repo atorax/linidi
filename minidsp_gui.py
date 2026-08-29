@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import argparse
 import copy
+import faulthandler
 import json
 import math
 import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +97,33 @@ def _readable_on(colour: QColor) -> QColor:
     lum = (0.299 * colour.red() + 0.587 * colour.green()
            + 0.114 * colour.blue())
     return QColor("#12141a") if lum > 140 else QColor("#ffffff")
+
+
+def _install_crash_log() -> None:
+    """Leave a Python stack behind if the process dies at the C++ level.
+
+    A segfault inside Qt prints nothing a traceback would catch: the
+    interpreter is gone before any Python handler runs. faulthandler writes
+    the stack of every thread from a signal handler instead, which is the
+    only way to find out what this app was doing when it died. It goes to a
+    file rather than stderr because the terminal that started it is usually
+    not around to read.
+    """
+    try:
+        path = Path.home() / ".config" / "linidi"
+        path.mkdir(parents=True, exist_ok=True)
+        # Kept on the module so the handle outlives this function; a closed
+        # file would leave faulthandler writing to a dead descriptor.
+        global _CRASH_LOG
+        _CRASH_LOG = open(path / "crash.log", "a", buffering=1)
+        _CRASH_LOG.write(f"\n--- started {datetime.now():%Y-%m-%d %H:%M:%S}"
+                         f" ---\n")
+        faulthandler.enable(file=_CRASH_LOG, all_threads=True)
+    except OSError:
+        faulthandler.enable(all_threads=True)
+
+
+_CRASH_LOG = None
 
 
 def card_heading(text: str) -> QLabel:
@@ -4125,6 +4154,16 @@ class MainWindow(QMainWindow):
         neither may start while the other is running."""
         self._writing = busy
         self._enable_writes(not busy)
+        # Meters poll the device from the UI thread and take the same lock a
+        # write holds, so during a save the main thread was blocking on it
+        # every 60 ms for the ten seconds the write ran -- freezing the
+        # window and queueing a burst of timer events behind it. There is
+        # nothing to sample anyway: the device is busy and those reads fail.
+        # The animation keeps running, so the bars decay rather than freeze.
+        if busy:
+            self.meter_poll.stop()
+        elif self.daemon is not None:
+            self.meter_poll.start(60)
 
     def _enable_writes(self, enabled: bool) -> None:
         self.apply_btn.setEnabled(enabled)
@@ -4465,6 +4504,7 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    _install_crash_log()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--daemon", default="http://127.0.0.1:5380",
                     help="minidspd HTTP API base URL")
