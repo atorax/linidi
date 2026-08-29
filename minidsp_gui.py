@@ -26,7 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import (QObject, QPointF, QRectF, QSize, QThread,
+from PySide6.QtCore import (QtMsgType, qInstallMessageHandler,
+                            QObject, QPointF, QRectF, QSize, QThread,
                             QTimer, Qt, Signal)
 from PySide6.QtGui import (QColor, QFont, QIcon, QPainter, QPainterPath,
                            QPen, QPixmap, QPolygonF)
@@ -119,8 +120,31 @@ def _install_crash_log() -> None:
         _CRASH_LOG.write(f"\n--- started {datetime.now():%Y-%m-%d %H:%M:%S}"
                          f" ---\n")
         faulthandler.enable(file=_CRASH_LOG, all_threads=True)
+        qInstallMessageHandler(_qt_message)
     except OSError:
         faulthandler.enable(all_threads=True)
+
+
+def _qt_message(mode, _context, message) -> None:
+    """Send Qt's own complaints to the log, and to stderr as before.
+
+    Qt says so when it is misused -- "Timers cannot be stopped from another
+    thread" is the warning for the fault that took four crashes to find --
+    and it says it on stderr, which for a windowed app launched from a
+    terminal nobody is watching goes nowhere. It costs nothing to keep.
+    """
+    label = {QtMsgType.QtDebugMsg: "debug",
+             QtMsgType.QtInfoMsg: "info",
+             QtMsgType.QtWarningMsg: "WARNING",
+             QtMsgType.QtCriticalMsg: "CRITICAL",
+             QtMsgType.QtFatalMsg: "FATAL"}.get(mode, "?")
+    line = f"[Qt {label}] {message}"
+    print(line, file=sys.stderr)
+    if _CRASH_LOG is not None:
+        try:
+            _CRASH_LOG.write(line + "\n")
+        except ValueError:
+            pass
 
 
 _CRASH_LOG = None
@@ -576,10 +600,12 @@ class TaskRunner(QObject):
     Qt object lifetime here is fussy and worth spelling out, because getting
     it wrong aborts the process rather than raising:
 
-      * Callbacks must not tear the thread down. A plain lambda connected to a
-        worker signal has no receiver QObject, so Qt uses a *direct* connection
-        and runs it in the worker thread -- where calling QThread.wait() means
-        a thread waiting on itself.
+      * Callbacks must not tear the thread down, and must not run on the
+        worker thread at all. A plain lambda connected to a worker signal has
+        no receiver QObject, so Qt uses a *direct* connection and runs it
+        there -- where calling QThread.wait() means a thread waiting on
+        itself, and where touching a widget or a timer is undefined. Every
+        callback is routed back through this object instead.
       * References must outlive the thread. Dropping the last Python reference
         to a still-running QThread lets the garbage collector destroy it, and
         Qt aborts with "QThread: Destroyed while thread is still running".
@@ -590,9 +616,23 @@ class TaskRunner(QObject):
     thread rather than run inline.
     """
 
+    # Carries a finished task's callback and its result back to the main
+    # thread. Emitting is thread-safe from anywhere; the connection below is
+    # what decides where the callback actually runs.
+    _deliver = Signal(object, object)
+
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self._live: list[tuple[QThread, Worker]] = []
+        # Queued to this object, which the window owns and which therefore
+        # lives on the main thread. That is what makes the guarantee below
+        # hold for every kind of callable, rather than only for the ones Qt
+        # can find a receiver for.
+        self._deliver.connect(self._invoke, Qt.QueuedConnection)
+
+    @staticmethod
+    def _invoke(callback, value):
+        callback(value)
 
     def run(self, fn, on_done=None, on_error=None):
         """Run `fn` -- which takes no arguments -- off the UI thread.
@@ -607,11 +647,24 @@ class TaskRunner(QObject):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
 
-        # Queued: these receivers live on the main thread.
+        # Callbacks are delivered through this object rather than connected
+        # to the worker directly. Qt picks a connection type from the
+        # receiver, and a plain closure or lambda has no receiver QObject to
+        # pick from -- so it gets a direct connection and runs on the worker
+        # thread. Most callers here pass closures, and several of them touch
+        # widgets or timers. Stopping a QTimer from the wrong thread corrupts
+        # the timer list, and the process then dies inside activateTimers
+        # some time later with nothing of ours on the stack.
+        #
+        # These two lambdas do run on the worker thread, which is safe
+        # because emitting a signal is, and the emit is queued to the main
+        # thread where the real callback is finally called.
         if on_done:
-            worker.done.connect(on_done)
+            worker.done.connect(
+                lambda value, cb=on_done: self._deliver.emit(cb, value))
         if on_error:
-            worker.failed.connect(on_error)
+            worker.failed.connect(
+                lambda msg, cb=on_error: self._deliver.emit(cb, msg))
 
         # quit() is thread-safe and merely asks the event loop to stop.
         worker.done.connect(thread.quit)
