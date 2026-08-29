@@ -96,6 +96,18 @@ def _readable_on(colour: QColor) -> QColor:
     return QColor("#12141a") if lum > 140 else QColor("#ffffff")
 
 
+def card_heading(text: str) -> QLabel:
+    """A card's name, drawn inside it rather than on its border.
+
+    A QGroupBox title sits on the frame, which puts it outside the card and
+    makes a long one look like a caption floating above the panel. Inside,
+    it reads as part of the thing it names.
+    """
+    lab = QLabel(text)
+    lab.setObjectName("cardHeading")
+    return lab
+
+
 def disc_badge(text: str, colour_name: str, size: int = 20,
                active: bool = True) -> QPixmap:
     """A small filled disc with a character in it.
@@ -194,6 +206,8 @@ QPushButton#danger[spent="true"] {{ color: {DANGER}; }}
 /* The two writes. Outlined rather than filled: both carry an indicator, and
    a solid fill fights the lamp for attention. Blue is the reversible one,
    orange the one that commits -- the same ranking used everywhere else. */
+QLabel#cardHeading {{ color: {MUTED}; font-weight: 600;
+                      letter-spacing: .03em; padding: 0 0 2px 0; }}
 QPushButton#rowReset {{ background: transparent; border: 1px solid {LINE};
                         border-radius: 3px; padding: 0; }}
 QPushButton#rowReset:hover {{ background: {PANEL2}; border-color: {ACCENT}; }}
@@ -1805,9 +1819,16 @@ class RoutingTable(QTableWidget):
         hh = self.horizontalHeader()
         # Only the destination name absorbs slack; the checkbox and the gain
         # field have a fixed natural width and stretching them just pads air.
+        # Fixed widths for the two narrow columns rather than sizing them to
+        # their contents: a spin box with a " dB" suffix asks for far more
+        # room than the number needs, and letting it have that left the
+        # destination name -- the column you actually read -- squeezed out.
+        hh.setMinimumSectionSize(30)
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.Fixed)
+        hh.setSectionResizeMode(2, QHeaderView.Fixed)
+        self.setColumnWidth(1, 32)
+        self.setColumnWidth(2, 72)
         self.setTextElideMode(Qt.ElideRight)
         self.setSelectionMode(QTableWidget.NoSelection)
         self.routes: list[dict[str, Any]] = []
@@ -1850,7 +1871,12 @@ class RoutingTable(QTableWidget):
 
             sb = QDoubleSpinBox()
             sb.setRange(-127.0, 12.0); sb.setDecimals(1)
-            sb.setSingleStep(0.5); sb.setSuffix(" dB")
+            sb.setSingleStep(0.5)
+            # No " dB" suffix here. The column header already says it, and
+            # repeating it on every row cost more width than the numbers do
+            # in a card this narrow.
+            sb.setMinimumWidth(0)
+            sb.setButtonSymbols(QDoubleSpinBox.NoButtons)
             sb.setValue(float(route.get("gain", 0.0)))
             sb.valueChanged.connect(self._emit)
             self.setCellWidget(r, 2, sb)
@@ -2023,8 +2049,10 @@ class ChannelEditor(QWidget):
         cf.addWidget(self.chain)
         root.addWidget(chain_frame)
 
-        basics = QGroupBox("Channel")
+        basics = QGroupBox()
         bl = QHBoxLayout(basics)
+        bl.addWidget(card_heading("Channel"))
+        bl.addSpacing(10)
         self.gain = QDoubleSpinBox()
         self.gain.setRange(-127.0, 12.0); self.gain.setDecimals(2)
         self.gain.setSingleStep(0.5); self.gain.setSuffix(" dB")
@@ -2083,9 +2111,12 @@ class ChannelEditor(QWidget):
         xo.addStretch(1)
         self.xo_holder = QWidget(); self.xo_holder.setLayout(xo)
 
-        self.routing_box = QGroupBox("Routing - outputs this input feeds")
+        self.routing_box = QGroupBox()
         rl = QVBoxLayout(self.routing_box)
+        rl.addWidget(card_heading("Routing"))
         self.routing = RoutingTable()
+        self.routing.setToolTip("Which outputs this input feeds, and at "
+                                "what gain")
         self.routing.changed.connect(self._emit)
         rl.addWidget(self.routing)
 
@@ -2141,8 +2172,12 @@ class ChannelEditor(QWidget):
         low_l.setContentsMargins(0, 0, 0, 0)
         low_l.setSpacing(8)
         low_l.addWidget(peq_box, 1)
+        # Never both on screen -- crossover belongs to an output and routing
+        # to an input -- so they need not agree on a width. Routing carries
+        # each destination's crossover alongside its name, which is longer
+        # than anything on a crossover card.
         self.xo_holder.setFixedWidth(240)
-        self.routing_box.setFixedWidth(240)
+        self.routing_box.setFixedWidth(310)
         low_l.addWidget(self.xo_holder)
         low_l.addWidget(self.routing_box)
         root.addWidget(lower, 3)
