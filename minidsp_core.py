@@ -1457,6 +1457,15 @@ def compare_live_stored(readings: list[dict[str, Any]],
     Returns {compared, unreadable, differences: [text, ...]}. Callers treat
     an empty `differences` with `compared` of zero as "nothing to say".
     """
+    # One quantisation step, with room to spare. An output's stored gain is
+    # not the value it runs at and is not meant to be: the device truncates
+    # when it loads a preset, so what gets stored is the request that lands
+    # on the tuned value afterwards. The request therefore sits above the
+    # running value by less than a step, and reporting that as a difference
+    # would mean flagging every tuned output on every read -- for the one
+    # thing that is arranged so a power cycle changes nothing.
+    GAIN_REQUEST_HEADROOM = 0.35
+
     stored_out = {c["index"]: c for c in cfg.get("outputs", [])}
     stored_in = {c["index"]: c for c in cfg.get("inputs", [])}
     out: dict[str, Any] = {"compared": 0, "unreadable": 0, "differences": []}
@@ -1490,10 +1499,22 @@ def compare_live_stored(readings: list[dict[str, Any]],
                 if key not in r or key not in s:
                     continue
                 out["compared"] += 1
-                if not same(r[key], s[key], tol):
-                    out["differences"].append(
-                        f"{label} {n} {key}: running {show(r[key])}, "
-                        f"stored {show(s[key])}")
+                if same(r[key], s[key], tol):
+                    continue
+                # An output's gain is the one field stored deliberately
+                # unequal to what is running. Accept the gap only in the
+                # direction and size truncation produces; anything else is
+                # a real disagreement and still gets said.
+                if key == "gain" and label == "out":
+                    try:
+                        gap = float(s[key]) - float(r[key])
+                    except (TypeError, ValueError):
+                        gap = None
+                    if gap is not None and 0 < gap <= GAIN_REQUEST_HEADROOM:
+                        continue
+                out["differences"].append(
+                    f"{label} {n} {key}: running {show(r[key])}, "
+                    f"stored {show(s[key])}")
 
             # Mixer cells read back, so routing is comparable too.
             sr = {x["index"]: x for x in s.get("routing", [])}
