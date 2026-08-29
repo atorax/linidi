@@ -1095,6 +1095,13 @@ class ResponsePlot(QWidget):
 class CompressorPanel(QGroupBox):
     """One output's compressor, with its gain-reduction meter.
 
+    The gain-reduction meter reads NaN whenever the channel is silent,
+    whether or not the compressor is switched on. That is the resting state
+    of an output with nothing routed to it, not a fault: routing signal to
+    out5 made its GR meter read a number, and removing the routing put it
+    back to NaN. MeterBar guards against it, so it shows as no bar rather
+    than latching.
+
     Five of its six settings cannot be read back from the device, so what is
     shown for those comes from the stored preset and from this project --
     there is no way to ask the hardware to confirm them. The provenance line
