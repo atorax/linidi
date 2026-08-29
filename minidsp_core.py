@@ -530,6 +530,14 @@ def parse_fir_taps(data: bytes, name: str = "",
     often will not, since every length that suits 64-bit also suits 32-bit
     -- it raises AmbiguousFirWidth carrying both readings, for the caller
     to ask. It does not guess from the numbers; see _parse_fir_binary.
+
+    A caller loading into miniDSP hardware has an answer this function does
+    not: the manuals say the coefficient file "must use IEEE 754
+    single-precision binary floating-point format", which is 32-bit, and
+    rePhase's miniDSP export is labelled "Binary file (32 bit, float)". So
+    FIR_DOCUMENTED_WIDTH is the right default there. It is a default rather
+    than an assumption made here, because rePhase will also write 64-bit
+    when asked and somebody eventually does.
     """
     if b"\x00" in data[:4096]:
         return _parse_fir_binary(data, name, width)
@@ -573,6 +581,10 @@ def parse_fir_taps(data: bytes, name: str = "",
             f"{name or 'that file'} holds no coefficients")
     return taps
 
+
+# What miniDSP's own manuals specify for a coefficient file, across the
+# Flex, Flex Eight and 2x4 HD: IEEE 754 single precision. Four bytes.
+FIR_DOCUMENTED_WIDTH = 4
 
 # Extensions that name their own width. Anything else is worked out.
 _FIR_WIDTH_BY_EXT = {".dbl": 8, ".f64": 8, ".double": 8,
@@ -1155,6 +1167,22 @@ def default_output(index: int, n_peq: int) -> dict[str, Any]:
             "compressor": default_compressor()}
 
 
+def default_fir() -> dict[str, Any]:
+    """An input's FIR block, with nothing loaded.
+
+    An empty tap list means "leave whatever is on the device alone", not
+    "load an empty filter". A project that has never been given a filter
+    should not wipe one somebody loaded from elsewhere, and a filter of no
+    taps is not a thing the hardware can be asked for anyway.
+
+    `pending` says the taps here have not been written yet. Two thousand
+    and forty-eight coefficients is a hundred and forty-seven packets, so
+    an Apply that rewrote them every time would spend most of itself on a
+    filter nobody had touched.
+    """
+    return {"enabled": False, "taps": [], "source": "", "pending": False}
+
+
 def default_input(index: int, n_out: int, n_peq: int) -> dict[str, Any]:
     """A fresh input: routed nowhere.
 
@@ -1175,6 +1203,7 @@ def default_input(index: int, n_out: int, n_peq: int) -> dict[str, Any]:
     return {"index": index, "name": f"In {index + 1}", "gain": 0.0,
             "mute": False,
             "peq": [default_peq_band(i, n_peq) for i in range(n_peq)],
+            "fir": default_fir(),
             "routing": [{"index": o, "enabled": False, "gain": 0.0}
                         for o in range(n_out)]}
 

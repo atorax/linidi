@@ -34,7 +34,7 @@ from PySide6.QtGui import (QColor, QFont, QIcon, QPainter, QPainterPath,
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-    QProgressBar,
+    QProgressBar, QSizePolicy,
     QHeaderView, QLabel, QListWidget, QListWidgetItem, QMainWindow,
     QMessageBox, QPlainTextEdit, QPushButton, QSlider, QStackedWidget,
     QStatusBar, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
@@ -1287,6 +1287,191 @@ class CompressorPanel(QGroupBox):
         self.gr.set_value(db)
 
 
+class FirPanel(QGroupBox):
+    """One input's FIR block: what is loaded, and how to load something.
+
+    A Flex 8 puts FIR on its two inputs and nowhere else -- 2048 taps each,
+    ahead of the crossover. That is the whole signal, so it suits room
+    correction and linear-phase EQ; it cannot make a linear-phase crossover,
+    which needs a FIR per output and this hardware does not have one.
+
+    Loading is safe and switching on is not, which is why they look
+    different here. A filter is written with the block bypassed throughout
+    and reads back afterwards to prove it landed. Enabling one is the step
+    that stopped this DSP answering at all, so it asks first.
+    """
+
+    changed = Signal()
+    load_requested = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.data: dict[str, Any] = {}
+        self._loading = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 6, 10, 8)
+        lay.setSpacing(6)
+        lay.addWidget(card_heading("FIR"))
+
+        self.enabled = QCheckBox("Enabled")
+        self.enabled.setToolTip(
+            "Put the filter into circuit on this input.\n"
+            "Sits ahead of the crossover, so it colours both drivers.")
+        # clicked, not toggled: this handler asks a question, and toggled
+        # also fires when the box is set from code -- so loading a channel
+        # whose filter is switched on would put the dialog in front of
+        # somebody who had only changed page.
+        self.enabled.clicked.connect(self._on_toggle)
+        lay.addWidget(self.enabled)
+
+        self.summary = QLabel("No filter loaded")
+        self.summary.setWordWrap(True)
+        lay.addWidget(self.summary)
+
+        self.plot = FirPlot()
+        lay.addWidget(self.plot)
+
+        self.load_btn = QPushButton("Load taps...")
+        self.load_btn.setToolTip(
+            "Read a coefficient file: one number per line, or raw floats.\n"
+            "rePhase, REW, Acourate and DRC-FIR exports all work.")
+        self.load_btn.clicked.connect(self.load_requested.emit)
+        lay.addWidget(self.load_btn)
+
+        self.note = QLabel("")
+        self.note.setObjectName("muted")
+        self.note.setWordWrap(True)
+        lay.addWidget(self.note)
+
+    def _on_toggle(self, on: bool) -> None:
+        if on and not self.data.get("taps"):
+            QMessageBox.warning(
+                self, "Nothing to switch on",
+                "No filter has been loaded into this input, so there is "
+                "nothing for the block to do. Load taps first.")
+            self.enabled.setChecked(False)
+            return
+        if on:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("Switch this FIR into circuit?")
+            box.setText(
+                "Enabling a FIR block is the one operation here that has "
+                "stopped this DSP answering commands at all -- it took a "
+                "preset change and a mute cycle to bring it back.\n\n"
+                "That happened with a filter written the wrong way, and "
+                "this one was written the way Device Console writes them "
+                "and read back to check. It has still not been switched on "
+                "successfully even once.\n\n"
+                "Worth having the amplifiers down.")
+            go = box.addButton("Enable", QMessageBox.AcceptRole)
+            box.addButton("Cancel", QMessageBox.RejectRole)
+            box.setDefaultButton(box.buttons()[-1])
+            box.exec()
+            if box.clickedButton() is not go:
+                self.enabled.setChecked(False)
+                return
+        self.store()
+        self.changed.emit()
+
+    def load(self, fir: dict[str, Any] | None):
+        self._loading = True
+        self.data = fir if fir is not None else {}
+        taps = self.data.get("taps") or []
+        self.enabled.setChecked(bool(self.data.get("enabled")))
+        self.enabled.setEnabled(bool(taps))
+        self.plot.set_taps(taps)
+        if taps:
+            d = core.describe_fir_taps(taps)
+            src = self.data.get("source") or "loaded"
+            self.summary.setText(
+                f"{d['count']} taps from {src}\n"
+                f"peak {d['peak']:.4g}, {d['nonzero']} non-zero")
+        else:
+            self.summary.setText("No filter loaded")
+        pending = bool(self.data.get("pending"))
+        self.note.setText(
+            "Not written to the device yet -- Apply or Save sends it."
+            if pending else
+            "Coefficients read back from this hardware, so what is written "
+            "here can be checked. The tap count and the on/off state "
+            "cannot, and come from the stored preset.")
+        self._loading = False
+
+    def store(self):
+        if self.data is None:
+            return
+        self.data["enabled"] = self.enabled.isChecked()
+
+    def set_taps(self, taps: list[float], source: str) -> None:
+        """Take a filter that has just been read from a file."""
+        self.data["taps"] = taps
+        self.data["source"] = source
+        self.data["pending"] = True
+        self.data["enabled"] = False
+        self.load(self.data)
+        self.changed.emit()
+
+
+class FirPlot(QWidget):
+    """The impulse response, drawn as it is: tap against tap number.
+
+    Not a frequency response. Deriving one means an FFT and a choice of
+    window, and both would be this app's opinion of a filter somebody else
+    designed. The taps are what was loaded, and a glance at them catches
+    the things that actually go wrong with a coefficient file -- a filter
+    that is all zeros, one that is clipped flat, one that arrived at the
+    wrong width and looks like noise.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.taps: list[float] = []
+        self.setMinimumHeight(70)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_taps(self, taps: list[float]) -> None:
+        self.taps = list(taps)
+        self.update()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect().adjusted(1, 1, -1, -1)
+        p.fillRect(r, QColor(PANEL2))
+        mid = r.center().y()
+        p.setPen(QPen(QColor(MINOR_GRID), 1))
+        p.drawLine(r.left(), mid, r.right(), mid)
+        if not self.taps:
+            p.setPen(QColor(MUTED))
+            p.drawText(r, Qt.AlignCenter, "no filter loaded")
+            return
+        peak = max((abs(v) for v in self.taps if math.isfinite(v)),
+                   default=0.0)
+        if peak <= 0:
+            p.setPen(QColor(MUTED))
+            p.drawText(r, Qt.AlignCenter, "all coefficients are zero")
+            return
+        n = len(self.taps)
+        half = (r.height() / 2.0) - 2
+        p.setPen(QPen(QColor(ACCENT), 1))
+        # One column per pixel, drawn as the extremes falling in it, so a
+        # 2048-tap filter in 300 pixels still shows its shape rather than
+        # every seventh coefficient.
+        for x in range(r.width()):
+            lo_i = n * x // r.width()
+            hi_i = max(lo_i + 1, n * (x + 1) // r.width())
+            seg = [v for v in self.taps[lo_i:hi_i] if math.isfinite(v)]
+            if not seg:
+                continue
+            top = mid - (max(seg) / peak) * half
+            bot = mid - (min(seg) / peak) * half
+            p.drawLine(r.left() + x, int(top), r.left() + x, int(bot))
+        p.setPen(QColor(MUTED))
+        p.drawText(r.adjusted(4, 0, -4, 0), Qt.AlignLeft | Qt.AlignTop,
+                   f"peak {peak:.3g}")
+
+
 class CrossoverGroup(QGroupBox):
     """Editor for one crossover group (4 biquad slots)."""
 
@@ -2171,6 +2356,7 @@ class ChannelEditor(QWidget):
 
     changed = Signal()
     navigate = Signal(str, int)      # (kind, index) from a chain link
+    fir_load_requested = Signal()    # the FIR panel wants a file
 
     def __init__(self):
         super().__init__()
@@ -2275,6 +2461,10 @@ class ChannelEditor(QWidget):
         self.comp = CompressorPanel()
         self.comp.changed.connect(self._emit)
         side_l.addWidget(self.comp)
+        self.fir = FirPanel()
+        self.fir.changed.connect(self._emit)
+        self.fir.load_requested.connect(self.fir_load_requested.emit)
+        side_l.addWidget(self.fir)
         side_l.addStretch(1)
 
         # Two views of one set of bands: the parameters, or the coefficients
@@ -2346,9 +2536,10 @@ class ChannelEditor(QWidget):
         self.invert.setChecked(bool(chan.get("invert")))
         self.xo_holder.setVisible(is_output)
         self.routing_box.setVisible(not is_output)
-        # The compressor is an output-only processor on this hardware; an
-        # input has FIR in the same place, which is not built yet.
+        # The compressor is an output-only processor on this hardware, and
+        # FIR an input-only one. They take the same place.
         self.comp.setVisible(is_output)
+        self.fir.setVisible(not is_output)
         if is_output:
             groups = chan.get("crossover", [])
             for widget, group in zip(self.xo_groups, groups):
@@ -2357,6 +2548,7 @@ class ChannelEditor(QWidget):
         else:
             self.routing.load(chan.get("routing", []),
                               (self.project or {}).get("outputs", []))
+            self.fir.load(chan.setdefault("fir", core.default_fir()))
         rate = int((self.project or {}).get("rate", 96000))
         self.peq.rate = self.bq.rate = rate
         self._active_peq().load(chan.get("peq", []))
@@ -2568,6 +2760,7 @@ class ChannelEditor(QWidget):
             self.comp.store()
         else:
             self.chan["routing"] = self.routing.store()
+            self.fir.store()
         # Only the visible tab is read. The hidden one holds widgets from
         # whenever it was last shown, and flushing those would write stale
         # values over edits made on the tab actually in front of the user.
@@ -3412,6 +3605,7 @@ class MainWindow(QMainWindow):
         self.editor = ChannelEditor()
         self.editor.changed.connect(self.on_edit)
         self.editor.navigate.connect(self.on_navigate)
+        self.editor.fir_load_requested.connect(self.on_fir_load)
         body.addWidget(self.editor, 1)
 
         right = QWidget()
@@ -4685,6 +4879,112 @@ class MainWindow(QMainWindow):
         tmp = core.new_project(n_in, n_out, n_peq, self.project["rate"])
         core.import_preset(tmp, cfg)
         return tmp
+
+    def on_fir_load(self):
+        """Read a coefficient file into the input on screen.
+
+        Lands in the project like every other import; Apply or Save is what
+        sends it. The block is not switched on by loading one -- a filter
+        arriving is not the same event as deciding to hear it.
+        """
+        chan, is_out = self.current_channel()
+        if chan is None or is_out:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Load FIR taps into {chan.get('name', 'this input')}",
+            str(self._last_dir("fir")),
+            "Coefficients (*.txt *.dat *.bin *.dbl *.f32 *.flt);;"
+            "All files (*)")
+        if not path:
+            return
+        self._remember_dir("fir", path)
+        name = Path(path).name
+        try:
+            data = Path(path).read_bytes()
+        except OSError as exc:
+            QMessageBox.warning(self, "Could not read that file", str(exc))
+            return
+
+        width = None
+        while True:
+            try:
+                taps = core.parse_fir_taps(data, name, width=width)
+                break
+            except core.AmbiguousFirWidth as exc:
+                width = self._ask_fir_width(exc, name)
+                if width is None:
+                    return
+            except ValueError as exc:
+                QMessageBox.warning(self, "Not a coefficient file", str(exc))
+                return
+
+        cap = self._fir_capacity()
+        if cap and len(taps) > cap:
+            QMessageBox.warning(
+                self, "That filter is too long",
+                f"{name} holds {len(taps)} coefficients and this input's "
+                f"FIR block takes {cap}.\n\nThe device would keep the "
+                f"first {cap} and drop the rest, which is a different "
+                f"filter rather than a shorter one, so nothing was loaded.")
+            return
+        d = core.describe_fir_taps(taps)
+        if not d["finite"]:
+            QMessageBox.warning(
+                self, "That filter has values that are not numbers",
+                f"{name} contains an infinity or a NaN. A filter like that "
+                f"does not attenuate anything, it propagates, and every "
+                f"sample after it is lost. Nothing was loaded.")
+            return
+
+        self.editor.fir.set_taps(taps, name)
+        self.on_edit()
+        extra = ("" if d["peak"] <= 1.0 else
+                 f"  Peak coefficient is {d['peak']:.4g}, above 1 -- which "
+                 f"a convolution may legitimately be, but is also what a "
+                 f"file scaled for another convention looks like.")
+        self.statusBar().showMessage(
+            f"Loaded {d['count']} taps from {name} into "
+            f"{chan.get('name', 'this input')}. Not written to the device "
+            f"yet.{extra}", 15000)
+
+    def _fir_capacity(self) -> int | None:
+        """What the device says the block holds, or None if it cannot say."""
+        native = self._native()
+        if native is None:
+            return None
+        chan, _is_out = self.current_channel()
+        try:
+            return native.fir_capacity(chan["index"])
+        except Exception:                                  # noqa: BLE001
+            return None
+
+    def _ask_fir_width(self, exc, name: str) -> int | None:
+        """Put the 32-or-64-bit question to the person holding the file."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("How wide are these coefficients?")
+        box.setText(
+            str(exc)
+            + "\n\nminiDSP's manuals specify IEEE 754 single precision -- "
+              "32-bit -- and that is what rePhase's miniDSP export writes. "
+              "It is the answer nearly every time. rePhase will write "
+              "64-bit if it is asked to, which is why this is a question "
+              "rather than an assumption.")
+        buttons = {}
+        default = None
+        for width, count in exc.options:
+            label = f"{width * 8}-bit  ({count} taps)"
+            if width == core.FIR_DOCUMENTED_WIDTH:
+                label += "  - what miniDSP documents"
+            b = box.addButton(label, QMessageBox.AcceptRole)
+            buttons[b] = width
+            if width == core.FIR_DOCUMENTED_WIDTH:
+                default = b
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        if default is not None:
+            box.setDefaultButton(default)
+        box.exec()
+        return buttons.get(box.clickedButton())
 
     def on_import_channel(self):
         chan, is_out = self.current_channel()
