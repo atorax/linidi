@@ -1767,25 +1767,32 @@ def count_effective_peq(bands: Iterable[dict[str, Any]]) -> int:
 
 def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
                         target_db: float, tries: int = 3,
-                        tol: float = 0.05) -> tuple[float, int]:
+                        tol: float = 0.05) -> tuple[float, float, int]:
     """Set an output gain and correct for the device's own quantisation.
 
     The Flex 8 dialect is Float32LE, so minidsp-rs writes the dB value
-    verbatim -- yet the value that comes back is snapped to a linear amplitude
-    grid of n/256, which puts it up to ~0.3 dB away from what was asked for.
-    The snapping is not to the nearest step and is not idempotent: reading a
-    gain and writing it straight back moves it further down. The transform
-    happens inside the device firmware, below anything the protocol exposes.
+    verbatim -- yet the value that comes back is not the value sent. The
+    error is ~0.2-0.3 dB at every level from -0.1 dB down to -100, which is
+    relative rather than absolute precision: roughly five mantissa bits
+    (2^-5 ~ 3% ~ 0.27 dB). The transform happens inside the device firmware,
+    below anything the protocol exposes.
 
-    Rather than model that, this closes the loop: write, read, and re-write
-    with the observed error subtracted. Three iterations usually land within a
-    quantisation step of the target, which is the best the hardware can do.
+    Finite precision is not the problem. The problem is that it *truncates*
+    instead of rounding to nearest, so every write lands low, and
+    `write(read(x))` is not `read(x)` -- reading a gain and writing it
+    straight back moves it down again, and repeating never settles. Rounding
+    to nearest would halve the worst-case error and make the operation a
+    fixed point. This is a firmware defect, not a limit of the hardware.
+
+    Rather than model it, this closes the loop: write, read, and re-write
+    with the observed error subtracted. Three iterations usually land within
+    a quantisation step of the target, which is the best the hardware can do.
 
     If none of them land, the device is left on whichever attempt came
-    closest, not on whichever happened to be last. The correction can
-    overshoot -- the grid is not uniform in dB -- so the final attempt is
-    sometimes worse than one before it, and stopping there would leave the
-    output further from its target than an earlier write already had it.
+    closest, not on whichever happened to be last: the correction can
+    overshoot, so the final attempt is sometimes worse than one before it,
+    and stopping there would leave the output further from its target than an
+    earlier write already had it.
 
     Returns (achieved_db, request_db, writes_performed). The request is the
     value that had to be *written* to land on achieved, and it matters as

@@ -262,10 +262,19 @@ Things that cost real debugging time:
   presents as routing changes that never take effect. Verified on a Flex 8:
   with `0x80` a disable does nothing; with `0xa0` the channel drops from
   −19.1 dB to silence immediately.
-- **Gain is snapped to a linear n/256 grid, and not to the nearest step.**
-  Writing a gain back exactly as read moves it: −7.18 dB reads back −7.496,
-  and repeating the write walks it down ~0.17 dB each time without settling.
-  Any write of a gain has to be verified and corrected in a loop.
+- **Gain is quantised to about five mantissa bits, and truncated rather than
+  rounded to nearest.** The error is ~0.2–0.3 dB at every level from −0.1 dB
+  down to −100 — relative precision, not a fixed grid. The precision is a
+  hardware limit; the truncation is a firmware defect, and it is the half
+  that causes trouble. Every write lands low, so writing a gain back exactly
+  as read moves it: −7.18 dB reads back −7.496, and repeating walks it down
+  ~0.17 dB each time without ever settling. Rounding to nearest would make
+  `write(read(x)) == read(x)` and halve the worst-case error.
+  The device applies the same truncation **when it loads a preset at
+  power-on**, so it is not enough to correct the live write: what gets saved
+  to flash has to be the value that *lands* on the target, not the target
+  itself. Any write of a gain has to be verified and corrected in a loop, and
+  the loop has to report the request it settled on.
 - **Delay is a sample count stored in the float's bit pattern**, not a float.
 - **Channel mute and mixer cells use 1 = off, 2 = on**, not 0/1. A plain zero
   means something else at those addresses. A channel's own mute gate reads
