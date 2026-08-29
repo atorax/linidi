@@ -2063,6 +2063,21 @@ class ChannelRow(QWidget):
         lay.addWidget(self.mute, 0, Qt.AlignVCenter)
         self.set_muted(muted)
 
+    def update_contents(self, name: str, detail: str, muted: bool,
+                        dim: bool) -> None:
+        """Re-say what this row says, without replacing the row.
+
+        The alternative is destroying it and building another, which is how
+        the list used to answer every edit -- and a widget torn down while Qt
+        still has an event in flight for it is a crash rather than an error.
+        """
+        self.channel_name = name
+        self.full_detail = detail
+        self.dim = dim
+        self.name.setText(name)
+        self.elide_detail(detail)
+        self.set_muted(muted)
+
     def set_muted(self, muted: bool):
         """Show a channel as muted, without rebuilding the row.
 
@@ -3536,8 +3551,58 @@ class MainWindow(QMainWindow):
                     row.set_muted(muted)
                 return
 
+    def _row_contents(self):
+        """What every channel row should say, in list order."""
+        rows = []
+        for i, inp in enumerate(self.project["inputs"]):
+            pq = core.count_effective_peq(inp.get("peq", []))
+            rows.append(("input", i, inp, f"{pq} EQ" if pq else "flat",
+                         False))
+        fed = self._outputs_fed()
+        for i, out in enumerate(self.project["outputs"]):
+            summary = self._summarise_output(out, i in fed)
+            rows.append(("output", i, out, summary, summary == "unused"))
+        return rows
+
+    def _refresh_rows_in_place(self, wanted) -> bool:
+        """Update the existing rows, or say the list has to be rebuilt.
+
+        clear() destroys every row widget, and a widget destroyed while Qt
+        still has an event in flight for it is a dangling receiver -- which
+        is what a segfault inside activateTimers looks like, with no Python
+        frame running because the fault happens before any slot is entered.
+
+        Rebuilding was never needed for the common case anyway. Editing a
+        channel changes what a row *says*, not which rows exist, and the
+        same reasoning already applies to mute: flipping that icon stopped
+        going through a rebuild for its own reasons. This extends it to the
+        rest of the row. A rebuild still happens when the shape really does
+        change -- a different device, a project with other channel counts.
+        """
+        keys = [(k, i) for k, i, _c, _d, _dim in wanted]
+        have = []
+        for r in range(self.chan_list.count()):
+            key = self.chan_list.item(r).data(Qt.UserRole)
+            if key:
+                have.append((r, key))
+        if [k for _r, k in have] != keys:
+            return False
+        for (r, _key), (_k, _i, chan, detail, dim) in zip(have, wanted):
+            row = self.chan_list.itemWidget(self.chan_list.item(r))
+            if row is None:
+                return False
+            row.update_contents(chan.get("name", ""), detail,
+                                bool(chan.get("mute")), dim)
+        return True
+
     def refresh_list(self):
         """Channel list ordered by signal flow: inputs first, then outputs."""
+        wanted = self._row_contents()
+        if self._refresh_rows_in_place(wanted):
+            self._paint_selection()
+            QTimer.singleShot(0, self._elide_details)
+            return
+
         prev = self.chan_list.currentItem()
         prev_key = prev.data(Qt.UserRole) if prev else None
 
@@ -3546,17 +3611,16 @@ class MainWindow(QMainWindow):
         self._name_col = self._name_column()
 
         self._add_header("Inputs · voicing")
-        for i, inp in enumerate(self.project["inputs"]):
-            pq = core.count_effective_peq(inp.get("peq", []))
-            self._add_channel_row("input", i, inp,
-                                  f"{pq} EQ" if pq else "flat", False)
+        for kind, i, chan, detail, dim in wanted:
+            if kind == "output":
+                continue
+            self._add_channel_row(kind, i, chan, detail, dim)
 
         self._add_header("Outputs · crossover")
-        fed = self._outputs_fed()
-        for i, out in enumerate(self.project["outputs"]):
-            summary = self._summarise_output(out, i in fed)
-            self._add_channel_row("output", i, out, summary,
-                                  summary == "unused")
+        for kind, i, chan, detail, dim in wanted:
+            if kind == "input":
+                continue
+            self._add_channel_row(kind, i, chan, detail, dim)
 
         self.chan_list.blockSignals(False)
 
