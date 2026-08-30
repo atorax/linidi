@@ -211,6 +211,7 @@ What the hardware will and will not tell you shapes the whole design:
 | crossover and PEQ coefficients | crossover only | yes |
 | **whether a filter is bypassed** | **no** | yes |
 | routing (mixer) | no | yes |
+| mixer-cell polarity | yes | yes |
 | compressor threshold | yes | yes |
 | compressor makeup, ratio, attack, release | no | yes |
 | compressor knee | no | accepted and ignored |

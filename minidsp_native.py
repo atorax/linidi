@@ -302,11 +302,18 @@ class NativeDevice:
             # output as unrouted, and writing it back would silence them.
             route_gain = [round(self._dev.read_floats(a, 1)[0], 3)
                           for a in spec.get("routing", [])]
+            # Polarity does read back, unlike the gate beside it: written 0
+            # or 1 it answers 0 or 1, and anything else saturates to 1.
+            route_pol = [bool(self._dev.read_ints(a, 1)[0])
+                         for a in spec.get("routing_polarity", [])]
         out["peq"] = [describe_peq_band(as_biquad(blocks[a]), i, self.rate)
                       for i, a in enumerate(peq_addrs)]
         if route_gain:
-            out["routing"] = [{"index": i, "gain": g}
-                              for i, g in enumerate(route_gain)]
+            out["routing"] = [
+                {"index": i, "gain": g,
+                 **({"polarity": route_pol[i]}
+                    if i < len(route_pol) else {})}
+                for i, g in enumerate(route_gain)]
         return out
 
     # -- the stored preset -------------------------------------------------
@@ -389,6 +396,7 @@ class NativeDevice:
             routes = []
             gains = spec.get("routing", [])
             gates = spec.get("routing_status", [])
+            pols = spec.get("routing_polarity", [])
             for out_idx in range(max(len(gains), len(gates))):
                 route: dict[str, Any] = {"index": out_idx}
                 if out_idx < len(gains):
@@ -399,6 +407,8 @@ class NativeDevice:
                     raw = p.i32(gates[out_idx])
                     if raw in (GATE_MUTED, GATE_PASSING):
                         route["enabled"] = raw == GATE_PASSING
+                if out_idx < len(pols):
+                    route["polarity"] = bool(p.i32(pols[out_idx]))
                 routes.append(route)
             if routes:
                 ch["routing"] = routes
@@ -761,12 +771,15 @@ class NativeDevice:
                     flags[addr] = bool(band["bypass"])
             gains = spec.get("routing", [])
             gates = spec.get("routing_status", [])
+            pols = spec.get("routing_polarity", [])
             for route in inp.get("routing", []):
                 dest = route["index"]
                 if dest < len(gains) and "gain" in route:
                     put_float(gains[dest], route["gain"])
                 if dest < len(gates):
                     put_int(gates[dest], _gate(not route.get("enabled")))
+                if dest < len(pols) and "polarity" in route:
+                    put_int(pols[dest], 1 if route["polarity"] else 0)
         return words, flags
 
     def fir_capacity(self, index: int) -> int:
@@ -939,6 +952,12 @@ class NativeDevice:
         spec = self.amap.inputs[in_idx]
         gates = spec.get("routing_status", [])
         gains = spec.get("routing", [])
+        pols = spec.get("routing_polarity", [])
+        if "polarity" in route and out_idx < len(pols):
+            # 0 passes, 1 inverts -- the same encoding a channel's own
+            # polarity uses, and it saturates: anything else reads back 1.
+            self._dev.write_int(pols[out_idx],
+                                1 if route["polarity"] else 0)
         if out_idx < len(gates):
             self._dev.write_int(gates[out_idx],
                                 _gate(not route.get("enabled")))

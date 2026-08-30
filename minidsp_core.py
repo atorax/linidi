@@ -1202,6 +1202,19 @@ def default_output(index: int, n_peq: int) -> dict[str, Any]:
             "compressor": default_compressor()}
 
 
+# The app offers whatever the device supports.
+#
+# Not a slogan: a rule with a failure mode behind it. Mixer-cell polarity
+# was in the address map for weeks, read out of a Device Console export by
+# tools/extend_map_from_export.py, and referenced by nothing. The hardware
+# keeps sixteen of them, they read back, they persist, and the app had no
+# way to set one. An address map that describes more than the app offers is
+# a list of things quietly withheld from whoever owns the device.
+#
+# So when a capability is found, it gets built or it gets written down as a
+# decision not to. See the README's roadmap for the ones still outstanding.
+
+
 # Design is staged; state is enforced.
 #
 # Most of what this app edits is a design -- a gain, a filter, a crossover.
@@ -1257,8 +1270,8 @@ def default_input(index: int, n_out: int, n_peq: int) -> dict[str, Any]:
             "mute": False,
             "peq": [default_peq_band(i, n_peq) for i in range(n_peq)],
             "fir": default_fir(),
-            "routing": [{"index": o, "enabled": False, "gain": 0.0}
-                        for o in range(n_out)]}
+            "routing": [{"index": o, "enabled": False, "gain": 0.0,
+                         "polarity": False} for o in range(n_out)]}
 
 
 def new_project(n_in: int, n_out: int, n_peq: int,
@@ -1430,7 +1443,8 @@ def build_config_payload(project: dict[str, Any]) -> dict[str, Any]:
             "mute": bool(inp["mute"]),
             "peq": [_peq_entry(b, rate) for b in inp["peq"]],
             "routing": [{"index": r["index"], "enabled": bool(r["enabled"]),
-                         "gain": float(r.get("gain", 0.0))}
+                         "gain": float(r.get("gain", 0.0)),
+                         "polarity": bool(r.get("polarity", False))}
                         for r in inp.get("routing", [])],
         })
         # A FIR filter rides along only when there is one to send and it
@@ -1898,6 +1912,8 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
             if "enabled" in found:
                 route["enabled"] = found["enabled"]
                 stats["routing"] += 1
+            if "polarity" in found:
+                route["polarity"] = found["polarity"]
             if readable and "gain" in found:
                 route["gain"] = found["gain"]
         fir = src.get("fir")

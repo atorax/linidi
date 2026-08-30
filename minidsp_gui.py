@@ -2099,7 +2099,7 @@ class ChainBar(QWidget):
 
 
 class RoutingTable(QTableWidget):
-    """Which outputs an input feeds, and at what gain.
+    """Which outputs an input feeds, at what gain, and in which polarity.
 
     This is the mixer matrix: on the device, one `Mixer_<in>_<out>_status`
     flag and one `Mixer_<in>_<out>` gain per pair. It is edited per input
@@ -2111,8 +2111,11 @@ class RoutingTable(QTableWidget):
     # On first: it is the thing you are setting, and the destination beside
     # it is what you are setting it for. Reading "on / Out 3" is the order
     # the decision is made in.
-    COLS = ["On", "To output", "Gain (dB)"]
-    C_ON, C_DEST, C_GAIN = range(len(COLS))
+    # The circle-slash is what a polarity invert is marked with on mixing
+    # desks and on miniDSP's own front end; spelling it out would cost more
+    # width than the column has in a card this narrow.
+    COLS = ["On", "To output", "Gain (dB)", "\u00f8"]
+    C_ON, C_DEST, C_GAIN, C_POL = range(len(COLS))
 
     def __init__(self):
         super().__init__(0, len(self.COLS))
@@ -2129,8 +2132,12 @@ class RoutingTable(QTableWidget):
         hh.setSectionResizeMode(self.C_ON, QHeaderView.Fixed)
         hh.setSectionResizeMode(self.C_DEST, QHeaderView.Stretch)
         hh.setSectionResizeMode(self.C_GAIN, QHeaderView.Fixed)
+        hh.setSectionResizeMode(self.C_POL, QHeaderView.Fixed)
         self.setColumnWidth(self.C_ON, 32)
-        self.setColumnWidth(self.C_GAIN, 72)
+        self.setColumnWidth(self.C_GAIN, 62)
+        self.setColumnWidth(self.C_POL, 30)
+        hh.setToolTip("On: does this input feed that output.  "
+                      "\u00f8: invert this path's polarity.")
         self.setTextElideMode(Qt.ElideRight)
         self.setSelectionMode(QTableWidget.NoSelection)
         self.routes: list[dict[str, Any]] = []
@@ -2177,6 +2184,22 @@ class RoutingTable(QTableWidget):
             sb.setValue(float(route.get("gain", 0.0)))
             sb.valueChanged.connect(self._emit)
             self.setCellWidget(r, self.C_GAIN, sb)
+
+            # One flag per cell, not per output: the same driver can take a
+            # normal feed from one input and an inverted one from another,
+            # which is the whole reason the hardware keeps sixteen of these
+            # rather than eight.
+            pol = QCheckBox()
+            pol.setChecked(bool(route.get("polarity")))
+            pol.setToolTip(
+                f"Invert the polarity of {name} as fed from this input.\n"
+                f"Separate from the output's own polarity, which inverts "
+                f"it whatever is feeding it.")
+            pol.toggled.connect(self._emit)
+            ph = QWidget(); pl = QHBoxLayout(ph)
+            pl.setContentsMargins(0, 0, 0, 0); pl.addWidget(pol)
+            pl.setAlignment(Qt.AlignCenter)
+            self.setCellWidget(r, self.C_POL, ph)
         self._loading = False
 
     def _emit(self, *_):
@@ -2190,6 +2213,9 @@ class RoutingTable(QTableWidget):
                 continue
             route["enabled"] = holder.findChild(QCheckBox).isChecked()
             route["gain"] = self.cellWidget(r, self.C_GAIN).value()
+            ph = self.cellWidget(r, self.C_POL)
+            if ph is not None:
+                route["polarity"] = ph.findChild(QCheckBox).isChecked()
         return self.routes
 
 
