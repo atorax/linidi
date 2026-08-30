@@ -4446,6 +4446,63 @@ class MainWindow(QMainWindow):
                 fir_progress=lambda d, t: self.read_progress.emit(d, t)),
             on_done=self._apply_done, on_error=self._write_failed)
 
+    def _confirm_enforcement(self, what: str,
+                             incoming: dict[str, Any]) -> bool:
+        """Say what loading will do to the device, and let it be refused.
+
+        Confirm, not block. Whoever is running a DSP can decide whether
+        their amplifiers should be on for this; what they cannot do is
+        decide about a write nobody told them was coming.
+
+        The unmute direction leads, because that is the one that makes
+        noise. A channel this config leaves passing, which the device
+        currently has muted, will start carrying signal the moment the file
+        opens.
+        """
+        if self.daemon is None or self.project is None:
+            return True
+        now = {}
+        for kind in ("inputs", "outputs"):
+            for c in self.project.get(kind, []):
+                now[(kind, c["index"])] = bool(c.get("mute"))
+        will_mute, will_pass = [], []
+        for kind in ("inputs", "outputs"):
+            for c in incoming.get(kind, []):
+                was = now.get((kind, c["index"]))
+                new_state = bool(c.get("mute"))
+                if was is None or was == new_state:
+                    continue
+                (will_mute if new_state else will_pass).append(
+                    c.get("name", f"{kind[:-1]} {c['index'] + 1}"))
+        if not will_mute and not will_pass:
+            return True
+
+        lines = []
+        if will_pass:
+            lines.append("These are muted now and this config leaves them "
+                         "passing, so they will start carrying signal:\n  "
+                         + ", ".join(will_pass))
+        if will_mute:
+            lines.append("These will be muted:\n  " + ", ".join(will_mute))
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Loading will change the device")
+        box.setText(
+            f"{what}\n\n" + "\n\n".join(lines)
+            + "\n\nMute is enforced on load rather than staged: it "
+              "describes whether a driver is making sound, so it takes "
+              "effect now and not at Apply. Everything else in this config "
+              "waits for Apply as usual.\n\n"
+              "Worth being sure this config suits the drivers that are "
+              "connected -- or having the amplifiers down while you find "
+              "out.")
+        go = box.addButton("Continue", QMessageBox.AcceptRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(box.buttons()[-1])
+        box.exec()
+        return box.clickedButton() is go
+
     def _enforce_mutes(self, what: str) -> None:
         """Make the device's mutes match the ones just loaded, and say so.
 
@@ -5015,6 +5072,16 @@ class MainWindow(QMainWindow):
 
         def land(source_project):
             src = source_project["outputs" if is_out else "inputs"][src_idx]
+            if bool(src.get("mute")) != bool(chan.get("mute")):
+                one = {"outputs" if is_out else "inputs": [
+                    {"index": chan["index"], "name": chan.get("name", "?"),
+                     "mute": bool(src.get("mute"))}]}
+                if not self._confirm_enforcement(
+                        f"Importing {names[src_idx]} into "
+                        f"{chan.get('name', 'this channel')}.", one):
+                    self.statusBar().showMessage(
+                        "Import cancelled; nothing changed.", 6000)
+                    return
             stats = core.import_channel(chan, src, is_out)
             self.on_select(self.chan_list.currentRow())
             self.on_edit()
@@ -5043,6 +5110,18 @@ class MainWindow(QMainWindow):
         preset, _ = dlg.choice()
 
         def land(cfg):
+            # Built first, so the question can name the channels before
+            # anything on screen or on the device has moved.
+            preview = core.new_project(
+                len(self.project["inputs"]), len(self.project["outputs"]),
+                len(self.project["outputs"][0]["peq"]),
+                self.project["rate"])
+            core.import_preset(preview, cfg)
+            if not self._confirm_enforcement(
+                    f"Importing preset {preset + 1}.", preview):
+                self.statusBar().showMessage(
+                    "Import cancelled; nothing changed.", 6000)
+                return
             stats = core.import_preset(self.project, cfg)
             self._project_preset = preset
             self.on_select(self.chan_list.currentRow())
@@ -5083,6 +5162,11 @@ class MainWindow(QMainWindow):
                 self, "Wrong shape",
                 "That project was made for a device with a different "
                 "number of outputs.")
+            return
+        if not self._confirm_enforcement(
+                f"Loading {Path(path).name}.", data):
+            self.statusBar().showMessage("Load cancelled; nothing changed.",
+                                         6000)
             return
         self.project = data
         self.project_path = Path(path)
