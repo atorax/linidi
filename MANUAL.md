@@ -255,8 +255,11 @@ and a Flex 8 does not have one — the device exposes exactly two FIR blocks,
 both on inputs.
 
 miniDSP's manual gives the budget as 4096 taps in total, distributed across
-the two inputs, each between 6 and 2048. Since the two maxima add up to the
-total, both can hold 2048 at once and there is nothing to trade.
+the two **input** channels, each between 6 and 2048. Both ends of that
+distribution are inputs — the pool cannot be spent on an output, because
+there is no output-side block to spend it on. And since the two maxima add
+up to the total, both inputs hold 2048 at once and nothing has to be
+traded.
 
 **Loading a filter.** *Load taps…* on an input's FIR panel reads a
 coefficient file:

@@ -1042,10 +1042,12 @@ FIR_BYPASSED, FIR_ENABLED = 3, 2
 # block's size in the image.
 #
 # miniDSP's manual puts it as a pool: 4096 taps in total, distributed as
-# you like across the two inputs, each between 6 and 2048. Since the two
-# maxima add up to the total there is never anything to trade -- both
-# blocks can hold 2048 at once, which is what GetNumFirTaps reports for
-# each of them.
+# you like across the two *input* channels, each between 6 and 2048. Both
+# ends of that distribution are inputs -- there is no output-side block to
+# move taps into, and the export names exactly two FIR blocks against a
+# compressor on all eight outputs. Since the two maxima add up to the
+# total there is nothing to trade either: both hold 2048 at once, which is
+# what GetNumFirTaps reports for each of them.
 #
 # The floor is why an unused block reads 6: that is the documented
 # minimum, not an arbitrary leftover.
