@@ -29,7 +29,8 @@ import sys
 import time
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog,
+                               QMessageBox, QRadioButton)
 
 
 class Driver:
@@ -39,9 +40,22 @@ class Driver:
 
     # -- input ------------------------------------------------------------
     def click(self, widget, button=Qt.LeftButton):
-        """A real press and release in the middle of a widget."""
-        QTest.mouseClick(widget, button, Qt.NoModifier,
-                         widget.rect().center())
+        """A real press and release somewhere the widget will accept one.
+
+        The centre is not always that place. QCheckBox and QRadioButton
+        override hitButton to the indicator and its label, so a box laid
+        out 248 pixels wide with the word "Enabled" in it ignores a click
+        at x=124 -- which looks exactly like a broken signal connection and
+        cost an hour of looking at the wrong end. Those get clicked near
+        the left edge, where the indicator is.
+        """
+        if isinstance(widget, (QCheckBox, QRadioButton)):
+            r = widget.rect()
+            point = QPoint(min(10, max(2, r.width() // 4)),
+                           r.height() // 2)
+        else:
+            point = widget.rect().center()
+        QTest.mouseClick(widget, button, Qt.NoModifier, point)
         self.pump(0.05)
 
     def key(self, widget, key, text=""):
