@@ -2190,6 +2190,63 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
         daemon.set_config({"outputs": [{"index": output, "gain": db}]})
         return readback.read_output(output)["gain"]
 
+    return _verify_gain(put, target_db, tries, tol)
+
+
+def write_input_gain_verified(daemon: "Daemon", readback: "Readback",
+                              index: int, target_db: float, tries: int = 3,
+                              tol: float = 0.05) -> tuple[float, float, int]:
+    """The same closed loop, for an input's gain.
+
+    The truncation is a property of how the device stores a gain, not of
+    which gain it is, so every gain on the device needs this and only the
+    outputs were getting it. An input's drifted the same way, quietly,
+    because nothing ever compared what was asked for with what landed.
+    """
+    def put(db: float) -> float:
+        daemon.set_config({"inputs": [{"index": index, "gain": db}]})
+        return readback.read_input(index)["gain"]
+
+    return _verify_gain(put, target_db, tries, tol)
+
+
+def write_route_gain_verified(daemon: "Daemon", readback: "Readback",
+                              index: int, dest: int, target_db: float,
+                              tries: int = 3,
+                              tol: float = 0.05) -> tuple[float, float, int]:
+    """And for one mixer cell's gain, which drifts like the rest."""
+    def put(db: float) -> float:
+        daemon.set_config({"inputs": [{"index": index, "routing": [
+            {"index": dest, "gain": db}]}]})
+        cells = readback.read_input(index).get("routing", [])
+        for c in cells:
+            if c.get("index") == dest:
+                return c.get("gain")
+        raise ProtocolError(
+            f"input {index + 1} reported no gain for its cell to output "
+            f"{dest + 1}, so the write could not be checked")
+
+    return _verify_gain(put, target_db, tries, tol)
+
+
+def _verify_gain(put, target_db: float, tries: int,
+                 tol: float) -> tuple[float, float, int]:
+    """Write, read, correct, and report the request that landed.
+
+    Shared by every gain on the device. `put` writes one value and returns
+    what the hardware reports afterwards; everything else about which gain
+    it is belongs to the caller.
+
+    Not every target is reachable. The grid is about 0.18 dB wide around
+    -8 dB, so a target landing between two steps cannot be hit: asking for
+    -8.25 gives -8.1648 or -8.3403 and nothing between, and the correction
+    swings between the two indefinitely. That is what `best_request` is
+    for -- the loop ends on whichever attempt came closest rather than on
+    whichever came last, and the error that remains is the step size.
+
+    Measured on a Flex 8, inputs, outputs and mixer cells share one grid:
+    the same request lands on the same value whichever kind of gain it is.
+    """
     request = float(target_db)
     best_request = best_achieved = None
     writes = 0
@@ -2211,6 +2268,32 @@ def write_gain_verified(daemon: "Daemon", readback: "Readback", output: int,
         writes += 1
         return achieved, best_request, writes
     return achieved, request, writes
+
+
+def store_gain_requests(payload: dict[str, Any],
+                        applied: dict[str, Any]) -> None:
+    """Put the values that landed into a payload bound for flash.
+
+    Every gain here is stored as the *request* that produced the tuned
+    value, not the value itself: the device truncates again when it loads a
+    preset, so storing what was wanted means getting a step less of it back
+    at power-on. Three classes of gain need this and for a long time only
+    one was getting it.
+    """
+    for out in payload.get("outputs", []):
+        req = (applied.get("gain_requests") or {}).get(out.get("index"))
+        if req is not None:
+            out["gain"] = req
+    for inp in payload.get("inputs", []):
+        idx = inp.get("index")
+        req = (applied.get("input_gain_requests") or {}).get(idx)
+        if req is not None:
+            inp["gain"] = req
+        for route in inp.get("routing", []):
+            req = (applied.get("route_gain_requests") or {}).get(
+                f"{idx},{route.get('index')}")
+            if req is not None:
+                route["gain"] = req
 
 
 def apply_project(daemon: "Daemon", project: dict[str, Any],
@@ -2245,7 +2328,8 @@ def apply_project(daemon: "Daemon", project: dict[str, Any],
         daemon.set_config(payload)
     result: dict[str, Any] = {
         "outputs": len(payload["outputs"]), "corrected": [],
-        "gain_requests": {},
+        "gain_requests": {}, "input_gain_requests": {},
+        "route_gain_requests": {},
         "fir": [i["index"] for i in payload["inputs"] if "fir" in i]}
     if not (verify_gains and readback):
         return result
@@ -2267,6 +2351,40 @@ def apply_project(daemon: "Daemon", project: dict[str, Any],
         # means the device rounds it down again at power-on and the gain
         # comes back a step below where it was tuned.
         result["gain_requests"][idx] = request
+
+    # Inputs and mixer cells hold gains in the same format and truncate them
+    # the same way. Only the outputs were being corrected, so those two
+    # drifted exactly as the outputs used to -- measured, an input asked for
+    # -8.25 dB landed at -8.34 and a cell asked for -6.75 landed at -6.876.
+    for inp in project["inputs"]:
+        idx = inp["index"]
+        if idx >= len(readback.amap.inputs):
+            continue
+        live = readback.read_input(idx)
+        target = float(inp.get("gain", 0.0))
+        achieved = live.get("gain")
+        if achieved is not None and abs(achieved - target) > tol:
+            got, request, writes = write_input_gain_verified(
+                daemon, readback, idx, target, tol=tol)
+            result["corrected"].append(
+                {"input": idx, "target": target, "achieved": got,
+                 "request": request, "writes": writes})
+            result["input_gain_requests"][idx] = request
+
+        cells = {c.get("index"): c.get("gain")
+                 for c in live.get("routing", [])}
+        for route in inp.get("routing", []):
+            dest = route["index"]
+            target = float(route.get("gain", 0.0))
+            achieved = cells.get(dest)
+            if achieved is None or abs(achieved - target) <= tol:
+                continue
+            got, request, writes = write_route_gain_verified(
+                daemon, readback, idx, dest, target, tol=tol)
+            result["corrected"].append(
+                {"route": [idx, dest], "target": target, "achieved": got,
+                 "request": request, "writes": writes})
+            result["route_gain_requests"][f"{idx},{dest}"] = request
     return result
 
 

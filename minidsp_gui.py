@@ -4612,10 +4612,7 @@ class MainWindow(QMainWindow):
             # same when it loads a preset at power-on -- so storing the
             # target means the gain comes back a step below where it was
             # tuned. Storing the request means power-on reproduces it.
-            for idx, request in (applied.get("gain_requests") or {}).items():
-                for out in payload.get("outputs", []):
-                    if out.get("index") == idx:
-                        out["gain"] = request
+            core.store_gain_requests(payload, applied)
             return native.save_stored_preset(
                 payload,
                 progress=lambda d, t: self.read_progress.emit(d, t))
