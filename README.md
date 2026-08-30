@@ -346,6 +346,36 @@ On the minidspd fallback path only:
 - [x] Compressor — eight of them, one per output
 - [x] FIR — two blocks, 2048 taps each, on the inputs
 
+### Deliberately not exposed
+
+The rule is that the app offers whatever the device supports, so the
+exceptions are worth naming. These are things the hardware has and this
+app does not offer, with the reason:
+
+- **Master FIR bypass** (`0x3F`, EEPROM `0xFFE0`). A global bypass above
+  the per-block FIR switches. On a device with Dirac this is Device
+  Console's Dirac on/off; a Flex 8 has no Dirac, and two per-block
+  switches sit on screen already. Mostly, though: there is no Dirac
+  hardware here to test it against, and every other capability in this
+  repo was measured on a real device before it was offered.
+- **Noise generator** (`0x45`). A per-channel generator would be useful
+  for wiring checks, and Device Console never calls it -- so there is no
+  vendor code to read and building it would mean guessing a write
+  protocol on somebody's speakers. REW already generates noise.
+- **OLED brightness and idle time** (`0x1A`, `0x1B`). Brightness is a
+  level index into a per-hardware table of contrast pairs that would have
+  to be extracted from the support package, for a cosmetic setting.
+- **DRE** (`0x1E`). A boolean the vendor gets and sets, whose effect on a
+  Flex 8 is unknown. Not offered until it is.
+- **CopyPreset** (`0x27`). Copies the active preset over all the others.
+  Import covers reading from any preset, more precisely; this is the only
+  way to *write* an inactive slot, which matters less now those slots
+  route nothing.
+- **`ERASE_FLASH`, `ENTER_BOOTLOADER`, `COM_FW_UPGRADE`,
+  `WRITE_DFLASH_ID`, `LOAD_DSP_PROGRAM`, `WRITE_FLASH_FULL_ADDR`.** These
+  are defined so they can be recognised and refused. `WRITE_DFLASH_ID` is
+  one-time programmable.
+
 ### On bypass
 
 Filters read from the hardware show an **indeterminate** enable box, and Apply
