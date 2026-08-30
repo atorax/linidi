@@ -437,10 +437,13 @@ app does not offer, with the reason:
   to be extracted from the support package, for a cosmetic setting.
 - **DRE** (`0x1E`). A boolean the vendor gets and sets, whose effect on a
   Flex 8 is unknown. Not offered until it is.
-- **CopyPreset** (`0x27`). Copies the active preset over all the others.
-  Import covers reading from any preset, more precisely; this is the only
-  way to *write* an inactive slot, which matters less now those slots
-  route nothing.
+- **CopyPreset** (`0x27`). Copies the active preset over *all* the others
+  in a single command. The capability is not missing: switch to the slot
+  you want, import from the preset you want, and save -- saving writes
+  whichever preset is active, so that slot gets written. Import is the
+  more precise instrument, one slot and one source at a time. What is not
+  offered is the one-shot overwrite-everything version, which flattens
+  every other slot whether or not you meant it.
 - **`ERASE_FLASH`, `ENTER_BOOTLOADER`, `COM_FW_UPGRADE`,
   `WRITE_DFLASH_ID`, `LOAD_DSP_PROGRAM`, `WRITE_FLASH_FULL_ADDR`.** These
   are defined so they can be recognised and refused. `WRITE_DFLASH_ID` is
