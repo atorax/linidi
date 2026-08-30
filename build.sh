@@ -43,4 +43,6 @@ EOF
     minidsp_gui.py
 
 echo
-echo "Built dist/linidi  ($(du -h dist/linidi | cut -f1))"
+# --apparent-size, because on a delayed-allocation filesystem the blocks of a
+# file this fresh are not on disk yet and plain du reports next to nothing.
+echo "Built dist/linidi  ($(du -h --apparent-size dist/linidi | cut -f1))"

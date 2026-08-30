@@ -5309,6 +5309,11 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("LiniDi")
     app.setApplicationDisplayName("LiniDi")
+    # Names the installed desktop entry, which is how a Wayland compositor
+    # ties this window back to its menu entry. Without it the window carries
+    # no matching app id, and pinning the running program to a launcher
+    # produces a second, iconless entry beside the real one.
+    app.setDesktopFileName("linidi")
     # Set on the application as well as the window: some window managers take
     # the task-bar entry's icon from here rather than from the window.
     app.setWindowIcon(app_icon())
