@@ -52,6 +52,7 @@ License: Apache-2.0
 
 from __future__ import annotations
 
+import math
 import struct
 import sys
 import time
@@ -249,6 +250,33 @@ def frame(cmd: int, args: Iterable[int] = ()) -> bytes:
 def addr_bytes(addr: int) -> bytes:
     """Parameter addresses go on the wire big-endian."""
     return struct.pack(">H", addr)
+
+
+def finite(values: Iterable[float], what: str) -> list[float]:
+    """Numbers on their way to the DSP, checked for being numbers.
+
+    struct.pack encodes NaN and infinity without complaint -- NaN becomes
+    0000c07f and goes out like any other coefficient -- so nothing below this
+    point would refuse them. What the DSP then does with a NaN in a filter is
+    not documented anywhere readable, and this is not hardware to find out on.
+
+    They are not hard to produce. Python's json accepts NaN and Infinity by
+    default, though strict JSON has neither, so a hand-edited project file is
+    enough; so is a malformed REW export, or arithmetic on an empty band.
+
+    The check is here rather than at the point each number is designed
+    because they arrive by several routes -- designed filters, imported REW
+    and Device Console files, raw biquads typed into the Biquad tab -- and
+    this is the one place all of them pass through on the way out.
+    """
+    out = []
+    for v in values:
+        f = float(v)
+        if not math.isfinite(f):
+            raise ProtocolError(
+                f"refusing to send {f} to the device as {what}")
+        out.append(f)
+    return out
 
 
 @dataclass
@@ -742,9 +770,10 @@ class MiniDSP:
 
     def write_float(self, addr: int, value: float,
                     mode: int = MODE_APPLY) -> None:
+        value, = finite([value], f"the parameter at 0x{addr:04x}")
         self.command(CMD_LOAD_DSP_PARAM,
                      bytes([mode]) + addr_bytes(addr)
-                     + struct.pack("<f", float(value)))
+                     + struct.pack("<f", value))
 
     def get_num_fir_taps(self, index: int) -> int:
         """How many taps this FIR block can hold.
@@ -771,7 +800,7 @@ class MiniDSP:
         does it. Anything past the packet limit is dropped here rather than
         by the device, so the count returned is always one this side chose.
         """
-        chunk = list(taps)[:MAX_FIR_TAPS_PER_PACKET]
+        chunk = finite(list(taps)[:MAX_FIR_TAPS_PER_PACKET], "a FIR tap")
         if not chunk:
             return 0
         payload = bytes([index & 0xFF]) + b"".join(
@@ -801,6 +830,7 @@ class MiniDSP:
         """Five coefficients, b0 b1 b2 a1 a2, in miniDSP convention."""
         if len(coeffs) != 5:
             raise ValueError("a biquad takes exactly 5 coefficients")
+        coeffs = finite(coeffs, f"a biquad coefficient at 0x{addr:04x}")
         payload = (bytes([MODE_ALT]) + addr_bytes(addr) + struct.pack(">H", 0)
                    + b"".join(struct.pack("<f", c) for c in coeffs))
         self.command(CMD_SET_DSP_FILTER_BIQUADS, payload)
