@@ -418,10 +418,16 @@ app does not offer, with the reason:
 
 - **Master FIR bypass** (`0x3F`, EEPROM `0xFFE0`). A global bypass above
   the per-block FIR switches. On a device with Dirac this is Device
-  Console's Dirac on/off; a Flex 8 has no Dirac, and two per-block
-  switches sit on screen already. Mostly, though: there is no Dirac
-  hardware here to test it against, and every other capability in this
-  repo was measured on a real device before it was offered.
+  Console's Dirac on/off. The Flex 8 is sold both with and without Dirac
+  — the address map covers both, `dsp_version` 110 and 111 — but the unit
+  everything here was measured on is a non-Dirac one, so there is no Dirac
+  hardware to test this against, and every other capability in this repo
+  was measured on a real device before it was offered. Two per-block FIR
+  switches sit on screen already.
+
+  **Dirac is not driven at all.** If you bought the Dirac version, this
+  app will still tune it as a Flex 8, but nothing here loads, enables or
+  configures a Dirac filter.
 - **Noise generator** (`0x45`). A per-channel generator would be useful
   for wiring checks, and Device Console never calls it -- so there is no
   vendor code to read and building it would mean guessing a write

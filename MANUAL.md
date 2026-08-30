@@ -455,7 +455,11 @@ replaces what is on screen.
 
 ## 11. What this app does not do
 
-- **Dirac.** Not on this hardware, and nothing here can test it.
+- **Dirac.** The Flex 8 is sold in a Dirac version and a plain one. This
+  app drives neither differently: it tunes both as a Flex 8, and does not
+  load, enable or configure a Dirac filter at all. The unit it was built
+  against is a non-Dirac one, so none of that could be tested even in
+  principle. Use Device Console for Dirac.
 - **The noise generator.** The device has one; Device Console never uses
   it, so there is no protocol to read and building it would mean guessing.
 - **Front-panel display settings.**
