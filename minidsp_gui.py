@@ -2265,7 +2265,7 @@ class ChannelRow(QWidget):
     ROW_HEIGHT = 28
 
     def __init__(self, name: str, detail: str, muted: bool, dim: bool,
-                 name_width: int, confirmed: bool = True):
+                 name_width: int):
         super().__init__()
         self.channel_name = name
         self.full_detail = detail
@@ -2304,7 +2304,7 @@ class ChannelRow(QWidget):
         self.set_muted(muted)
 
     def update_contents(self, name: str, detail: str, muted: bool,
-                        dim: bool, confirmed: bool = True) -> None:
+                        dim: bool) -> None:
         """Re-say what this row says, without replacing the row.
 
         The alternative is destroying it and building another, which is how
@@ -2316,35 +2316,23 @@ class ChannelRow(QWidget):
         self.dim = dim
         self.name.setText(name)
         self.elide_detail(detail)
-        self.set_muted(muted, confirmed)
+        self.set_muted(muted)
 
-    def set_muted(self, muted: bool, confirmed: bool = True):
+    def set_muted(self, muted: bool):
         """Show a channel as muted, without rebuilding the row.
 
         Flipping one icon used to go through a full list rebuild, which also
         re-selected a row and so reloaded the whole editor for a channel that
         had not changed.
 
-        `confirmed` is whether the device said so, and it only changes the
-        tooltip. Loading a project or importing a preset fills mute in from
-        a file, and a file records what was true when it was written -- so
-        without it the icon draws a channel as quiet on no better evidence
-        than that somebody once saved it that way, which is a claim about
-        whether a driver is making sound.
-
-        Saying so on hover is the whole of it. Drawing it differently would
-        need a visual language for "believed but unverified", and this app
-        does not have one -- colour means what kind of thing something is,
-        fill means in circuit or not. Inventing a third axis for one icon
-        is how a UI ends up with rules only its author knows.
+        The icon needs no hedging about whether the device agrees, because
+        the device is made to agree: mute is enforced rather than staged.
+        See default_fir's neighbour in minidsp_core for why.
         """
         self.mute.setChecked(muted)
         self.mute.setIcon(speaker_icon(16, muted=muted))
         self.mute.setToolTip(
-            f"{'Unmute' if muted else 'Mute'} {self.channel_name}"
-            + ("" if confirmed else
-               "\n\nShown from the project, not from the device -- read "
-               "or apply to make it true."))
+            f"{'Unmute' if muted else 'Mute'} {self.channel_name}")
         self.name.setStyleSheet(
             f"color: {MUTED};" if muted or self.dim else "")
 
@@ -3829,8 +3817,7 @@ class MainWindow(QMainWindow):
         item = QListWidgetItem()
         item.setData(Qt.UserRole, (kind, i))
         row = ChannelRow(chan.get("name", ""), detail,
-                         bool(chan.get("mute")), dim, self._name_col,
-                         self._mute_confirmed(chan))
+                         bool(chan.get("mute")), dim, self._name_col)
         row.toggled.connect(
             lambda muted, k=kind, n=i: self.on_channel_mute(k, n, muted))
         # The stylesheet pads list items, and that padding is not taken out of
@@ -3852,7 +3839,6 @@ class MainWindow(QMainWindow):
         key = "outputs" if kind == "output" else "inputs"
         chan = self.project[key][index]
         chan["mute"] = muted
-        chan["mute_source"] = "device"
         self._show_mute(kind, index, muted)
         name = chan.get("name", kind)
         payload = {key: [{"index": index, "mute": muted}]}
@@ -3892,11 +3878,6 @@ class MainWindow(QMainWindow):
             rows.append(("output", i, out, summary, summary == "unused"))
         return rows
 
-    @staticmethod
-    def _mute_confirmed(chan: dict[str, Any]) -> bool:
-        """Whether the device is the reason this channel shows as it does."""
-        return chan.get("mute_source") == "device"
-
     def _refresh_rows_in_place(self, wanted) -> bool:
         """Update the existing rows, or say the list has to be rebuilt.
 
@@ -3925,8 +3906,7 @@ class MainWindow(QMainWindow):
             if row is None:
                 return False
             row.update_contents(chan.get("name", ""), detail,
-                                bool(chan.get("mute")), dim,
-                                self._mute_confirmed(chan))
+                                bool(chan.get("mute")), dim)
         return True
 
     def refresh_list(self):
@@ -4466,12 +4446,46 @@ class MainWindow(QMainWindow):
                 fir_progress=lambda d, t: self.read_progress.emit(d, t)),
             on_done=self._apply_done, on_error=self._write_failed)
 
-    def _mute_now_confirmed(self) -> None:
-        """Every channel's mute has just been written, so all are true."""
-        for chans in ((self.project or {}).get("outputs", []),
-                      (self.project or {}).get("inputs", [])):
-            for ch in chans:
-                ch["mute_source"] = "device"
+    def _enforce_mutes(self, what: str) -> None:
+        """Make the device's mutes match the ones just loaded, and say so.
+
+        Mute reports whether a driver is making sound, so an icon showing
+        it has to be true rather than pending -- see the policy note beside
+        default_fir in minidsp_core. Loading a project or importing a
+        preset therefore writes them straight away.
+
+        This can start sound: a config that leaves a channel unmuted will
+        unmute it. That is the point, and it is said out loud rather than
+        hidden, because the alternative -- applying a configuration's
+        routing while quietly dropping the mutes that made it safe -- is
+        the more dangerous half.
+
+        Nothing else in the payload goes: only the mute of every channel.
+        """
+        if self.daemon is None or self.project is None:
+            return
+        payload = {
+            "outputs": [{"index": o["index"], "mute": bool(o.get("mute"))}
+                        for o in self.project.get("outputs", [])],
+            "inputs": [{"index": i["index"], "mute": bool(i.get("mute"))}
+                       for i in self.project.get("inputs", [])],
+        }
+        muted = [c.get("name", "?")
+                 for c in (self.project.get("inputs", [])
+                           + self.project.get("outputs", []))
+                 if c.get("mute")]
+        try:
+            self.daemon.set_config(payload)
+        except Exception as exc:                           # noqa: BLE001
+            self.statusBar().showMessage(
+                f"{what}: the mute states could not be written ({exc}). "
+                f"What is on screen may not be what the device is doing.",
+                12000)
+            return
+        self.statusBar().showMessage(
+            f"{what}. Mute enforced on the device: "
+            + (f"{len(muted)} channel(s) muted -- {', '.join(muted)}"
+               if muted else "every channel passing"), 12000)
 
     def _clear_fir_pending(self) -> None:
         """A filter that has been written is no longer waiting to be.
@@ -4488,7 +4502,6 @@ class MainWindow(QMainWindow):
     def _apply_done(self, _):
         self._set_writing(False)
         self._clear_fir_pending()
-        self._mute_now_confirmed()
         self.dirty = False
         # Working memory now matches the project; the stored preset does not,
         # and saying so is the whole point of the second lamp.
@@ -4557,7 +4570,6 @@ class MainWindow(QMainWindow):
         self.progress.hide()
         self._set_writing(False)
         self._clear_fir_pending()
-        self._mute_now_confirmed()
         self.dirty = False
         self.stored_current = True
         self.save_project()
@@ -5008,12 +5020,12 @@ class MainWindow(QMainWindow):
             self.on_edit()
             where = ("" if preset == self._project_preset
                      else f" of preset {preset + 1}")
-            self.statusBar().showMessage(
+            self._enforce_mutes(
                 f"Imported {names[src_idx]}{where} into {chan['name']} -- "
                 f"{stats['peq']} PEQ bands"
                 + (f", {stats['crossover']} crossover groups"
                    if stats["crossover"] else "")
-                + ". Not written to the device yet.", 12000)
+                + ", nothing else written yet")
 
         if preset == self._project_preset or self._native() is None:
             land(self.project)
@@ -5037,10 +5049,10 @@ class MainWindow(QMainWindow):
             self.refresh_list()
             self.on_edit()
             self.update_warning()
-            self.statusBar().showMessage(
+            self._enforce_mutes(
                 f"Imported preset {preset + 1}: {stats['outputs']} outputs, "
-                f"{stats['inputs']} inputs, {stats['peq']} PEQ bands. "
-                f"Not written to the device yet.", 12000)
+                f"{stats['inputs']} inputs, {stats['peq']} PEQ bands, "
+                f"nothing else written yet")
 
         self._read_preset_async(preset, land)
 
@@ -5072,10 +5084,10 @@ class MainWindow(QMainWindow):
                 "That project was made for a device with a different "
                 "number of outputs.")
             return
-        core.mute_unconfirmed(data)
         self.project = data
         self.project_path = Path(path)
         self.dirty = True
+        self._enforce_mutes(f"Loaded {Path(path).name}")
         self.refresh_list()
         self.on_select(self.chan_list.currentRow())
         self.update_warning()
