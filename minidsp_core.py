@@ -2448,6 +2448,168 @@ DECODE_CHECK_FREQS = [20.0 * (1000.0 ** (i / 31.0)) for i in range(32)]
 DECODE_CHECK_TOL_DB = 0.1
 
 
+def _standard_pole(a1: float, a2: float):
+    """(cos w0, alpha) for the denominator every non-shelf RBJ type shares.
+
+    Stored coefficients are miniDSP's, whose feedback terms are negated
+    against RBJ's: A1 = -a1 and A2 = -a2. Working in RBJ terms from there,
+    A2 = (1 - alpha) / (1 + alpha) inverts to alpha directly, and the
+    cosine falls out of A1.
+    """
+    u = -a2
+    if abs(1.0 + u) < 1e-12:
+        return None
+    alpha = (1.0 - u) / (1.0 + u)
+    if alpha <= 0:
+        return None
+    c = a1 / (1.0 + u)
+    if not -1.0 < c < 1.0:
+        return None
+    return c, alpha
+
+
+def _shelf_candidate(bq: dict[str, float], rate: int, kind: str):
+    """(kind, f0, Q, gain) for a shelf, or None.
+
+    A shelf's denominator carries the gain in it -- 2*sqrt(A)*alpha rather
+    than alpha -- so the pole cannot be read without knowing A first. It
+    can: a low shelf's gain is its response at DC and a high shelf's is its
+    response at Nyquist, both of which are one division. With A in hand the
+    two normalised feedback terms are two equations in the corner and the
+    width, and they solve.
+    """
+    b0, b1, b2 = bq["b0"], bq["b1"], bq["b2"]
+    a1, a2 = bq["a1"], bq["a2"]
+    A1, A2 = -a1, -a2
+    den = (1.0 + A1 + A2) if kind == "lowshelf" else (1.0 - A1 + A2)
+    num = (b0 + b1 + b2) if kind == "lowshelf" else (b0 - b1 + b2)
+    if abs(den) < 1e-12:
+        return None
+    h = num / den
+    if h <= 0:
+        return None
+    gain = 20.0 * math.log10(h)
+    if abs(gain) < 1e-6:
+        return None                      # a flat shelf is not a shelf
+    A = 10.0 ** (gain / 40.0)
+    P, M, S = A + 1.0, A - 1.0, 2.0 * math.sqrt(A)
+    if abs(M) < 1e-12:
+        return None
+    # The two shelves do not share a denominator. RBJ's low shelf carries
+    # +(A-1)cos and a negated a1; the high shelf carries -(A-1)cos and a
+    # positive one. Deriving both from the low-shelf form gave a high shelf
+    # that never once matched its own response.
+    if kind == "lowshelf":
+        bottom = P * (1.0 + A2) + A1 * M
+        if abs(bottom) < 1e-12:
+            return None
+        D = 8.0 * A / bottom
+        c = (D * (1.0 + A2) / 2.0 - P) / M
+    else:
+        bottom = P * (1.0 + A2) - A1 * M
+        if abs(bottom) < 1e-12:
+            return None
+        D = 8.0 * A / bottom
+        c = (P - D * (1.0 + A2) / 2.0) / M
+    if not -1.0 < c < 1.0:
+        return None
+    alpha = D * (1.0 - A2) / (2.0 * S)
+    if alpha <= 0:
+        return None
+    w0 = math.acos(c)
+    if w0 <= 0:
+        return None
+    q = math.sin(w0) / (2.0 * alpha)
+    if q <= 0:
+        return None
+    return kind, rate * w0 / (2.0 * math.pi), q, gain
+
+
+def _peq_candidates(bq: dict[str, float], rate: int):
+    """Every reading of this biquad worth checking, best guess first.
+
+    Several RBJ shapes share the b1 == -a1 relationship the original
+    inverse keyed on -- a shelf and an all-pass both do -- so a single
+    answer was either right or confidently wrong. Offering candidates and
+    letting the caller check each against the actual response turns that
+    into a search with a verdict.
+    """
+    out = []
+    first = _decode_peq_raw(bq, rate)
+    if first:
+        out.append(first)
+
+    b0, b1, b2, a1, a2 = (bq["b0"], bq["b1"], bq["b2"], bq["a1"], bq["a2"])
+    pole = _standard_pole(a1, a2)
+    if pole:
+        c, alpha = pole
+        w0 = math.acos(c)
+        if w0 > 0:
+            f0 = rate * w0 / (2.0 * math.pi)
+            q = math.sin(w0) / (2.0 * alpha)
+            if q > 0:
+                # All-pass: unity magnitude, numerator the denominator
+                # reversed. Bandpass: no middle term, and the outer two
+                # equal and opposite.
+                if abs(b2 - 1.0) < 1e-4 and abs(b0 + a2) < 1e-4:
+                    out.append(("allpass", f0, q, 0.0))
+                if abs(b1) < 1e-6 and abs(b0 + b2) < 1e-6:
+                    out.append(("bandpass", f0, q, 0.0))
+                out.append(("notch", f0, q, 0.0))
+
+    for kind in ("lowshelf", "highshelf"):
+        cand = _shelf_candidate(bq, rate, kind)
+        if cand:
+            out.append(cand)
+
+    # The peaking reading, offered whatever classify_biquad made of the
+    # shape. It decides which branch _decode_peq_raw takes, and at 30 Hz it
+    # calls a deep peaking cut a highpass -- so the peaking inverse never
+    # ran and the band came back as nothing at all. Guessing wrong is free
+    # now that every candidate is checked against the response.
+    peak = _peaking_candidate(bq, rate)
+    if peak and peak not in out:
+        out.append(peak)
+    return out
+
+
+def _peaking_candidate(bq: dict[str, float], rate: int):
+    """The peaking/notch reading of a biquad, without asking what shape it
+    looks like.
+
+    Writing t = alpha/A and p = alpha*A, both fall out of the feedback and
+    numerator terms, and A and alpha follow from their product and ratio.
+    """
+    b0, b1, b2, a1, a2 = (bq["b0"], bq["b1"], bq["b2"], bq["a1"], bq["a2"])
+    if abs(b1 + a1) > max(1e-6, abs(a1) * 1e-4):
+        return None
+    if abs(1.0 - a2) < 1e-12:
+        return None
+    t = (1.0 + a2) / (1.0 - a2)
+    if t <= 0:
+        return None
+    c = a1 * (1.0 + t) / 2.0
+    if not -1.0 < c < 1.0:
+        return None
+    w0 = math.acos(c)
+    if w0 <= 0:
+        return None
+    if abs(b0 + b2) < 1e-12:
+        return None
+    p = (b0 - b2) / (b0 + b2)
+    if p <= 0:
+        return None
+    A = math.sqrt(p / t)
+    alpha = math.sqrt(p * t)
+    if alpha <= 0 or A <= 0:
+        return None
+    q = math.sin(w0) / (2.0 * alpha)
+    if q <= 0:
+        return None
+    return ("peaking", rate * w0 / (2.0 * math.pi), q,
+            40.0 * math.log10(A))
+
+
 def _decode_peq_raw(bq: dict[str, float], rate: int):
     """Recover (type, f0, Q, gain_db) from a PEQ biquad, or None.
 
@@ -2525,21 +2687,23 @@ def decode_peq(bq: dict[str, float], rate: int):
     as type, frequency, Q and gain; the caller keeps it as raw coefficients,
     which is exactly what the Biquad tab is for.
     """
-    guess = _decode_peq_raw(bq, rate)
-    if guess is None:
-        return None
-    kind, f0, q, gain = guess
-    if not (0 < f0 < rate / 2) or not q or q <= 0:
-        return None
-    try:
-        check = design_biquad(kind, f0, q, gain, rate)
-    except ValueError:
-        return None
-    a = response_db([bq], DECODE_CHECK_FREQS, rate)
-    b = response_db([check], DECODE_CHECK_FREQS, rate)
-    if max(abs(x - y) for x, y in zip(a, b)) > DECODE_CHECK_TOL_DB:
-        return None
-    return guess
+    want = response_db([bq], DECODE_CHECK_FREQS, rate)
+    best, best_err = None, None
+    for guess in _peq_candidates(bq, rate):
+        kind, f0, q, gain = guess
+        if not (0 < f0 < rate / 2) or not q or q <= 0:
+            continue
+        try:
+            check = design_biquad(kind, f0, q, gain, rate)
+        except (ValueError, KeyError):
+            continue
+        got = response_db([check], DECODE_CHECK_FREQS, rate)
+        err = max(abs(x - y) for x, y in zip(want, got))
+        if err > DECODE_CHECK_TOL_DB:
+            continue
+        if best_err is None or err < best_err:
+            best, best_err = guess, err
+    return best
 
 
 # ---------------------------------------------------------------------------
