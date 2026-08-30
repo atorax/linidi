@@ -36,7 +36,7 @@ they are untested.
 
 Nothing but Python and a udev rule. The app opens the device itself over USB.
 
-- Python 3.10+
+- Python 3.11+
 - [PySide6](https://doc.qt.io/qtforpython/) (Qt bindings, LGPL v3)
 - [pyusb](https://github.com/pyusb/pyusb) and libusb 1.0
 - [hidapi](https://github.com/trezor/cython-hidapi) — the second transport
@@ -47,7 +47,7 @@ Nothing but Python and a udev rule. The app opens the device itself over USB.
 sudo pacman -S python-pyside6 python-pyusb python-hidapi libusb
 
 # Debian / Ubuntu
-sudo apt install python3-pyside6.qtwidgets python3-usb python3-hidapi libusb-1.0-0
+sudo apt install python3-pyside6.qtwidgets python3-usb python3-hid libusb-1.0-0
 ```
 
 `requests` is needed only for the optional minidspd fallback described under

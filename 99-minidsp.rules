@@ -1,0 +1,21 @@
+# miniDSP devices -- grant the 'audio' group access to the HID control
+# interface. The control endpoint is separate from the USB Audio endpoint, so
+# this does not affect ALSA playback.
+#
+# Vendor 2752 = miniDSP. Every model is matched rather than one product id,
+# since the control protocol is the same across the range.
+#
+# Install with:
+#   sudo cp 99-minidsp.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Then unplug and replug the device, and make sure you are in the 'audio'
+# group -- 'id -nG' will tell you, and a group you were just added to needs a
+# fresh login to take effect.
+#
+# Both lines are needed. The app reaches the device through libusb, which uses
+# the /dev/bus/usb node matched by the second rule; the first covers the
+# /dev/hidrawN node used by the fallback transport.
+
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2752", MODE="0660", GROUP="audio"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2752", MODE="0660", GROUP="audio"

@@ -49,28 +49,41 @@ verifies what it writes.
 
 ### Permissions
 
-The device is a USB HID. Out of the box only root may open it. Install the
-udev rule:
+The device is a USB HID, and out of the box only root may open it. This is
+the one step that needs administrator rights, and it is needed once.
+
+If you have the repository, the rule ships with it:
 
 ```
 sudo cp 99-minidsp.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-Unplug and replug the device. Without this you will get *"the device is
-already in use by another program"* or a permissions error.
-
-### Running from source
+If you only have the program, write it out directly -- it is two lines:
 
 ```
-pip install -r requirements.txt
+sudo tee /etc/udev/rules.d/99-minidsp.rules >/dev/null <<'EOF'
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="2752", MODE="0660", GROUP="audio"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2752", MODE="0660", GROUP="audio"
+EOF
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Then unplug and replug the device. You also need to be in the `audio` group;
+`id -nG` will tell you, and a group you were just added to does not apply
+until you log out and back in.
+
+Without this you will get *"the device is already in use by another
+program"* or a permissions error.
+
+### Starting it
+
+```
 python3 -m linidi
 ```
 
-### A single file instead
-
-`./build.sh` produces one executable with Python and Qt inside it. It needs
-nothing installed to run.
+Or run the executable, if you have one. Building that executable is a
+developer task rather than a user one, and is covered in the README.
 
 ---
 
