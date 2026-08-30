@@ -12,7 +12,7 @@ Usage:
     python3 gen_address_map.py /path/to/minidsp-rs [device ...]
 
 With no device names, every device file found is converted. Output lands in
-`address_maps/<device>.json` next to this script's parent directory.
+`linidi/address_maps/<device>.json`, inside the package that loads them.
 
 Why parse rather than hardcode: it works for every device minidsp-rs supports,
 and it stays correct when upstream regenerates a profile.
@@ -124,7 +124,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     wanted = set(argv[2:])
-    outdir = Path(__file__).resolve().parent.parent / "address_maps"
+    outdir = Path(__file__).resolve().parent.parent / "linidi" / "address_maps"
     outdir.mkdir(exist_ok=True)
 
     skip = {"mod.rs", "probe.rs"}

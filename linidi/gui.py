@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-LiniDi -- a desktop tuning front-end for miniDSP hardware on Linux.
+linidi.gui -- a desktop tuning front-end for miniDSP hardware on Linux.
 
-    python3 minidsp_gui.py
+    python3 -m linidi
 
 Talks to the device directly over USB and needs nothing else installed -- no
 daemon, no external binaries. If the USB device cannot be opened (usually a
@@ -41,8 +41,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-import minidsp_core as core
-import minidsp_native as native
+from . import core
+from . import native
 
 # --------------------------------------------------------------------------
 # Palette
@@ -339,15 +339,31 @@ def device_dir() -> Path:
     return here if here.is_dir() else Path.home()
 
 
+def package_dir() -> Path:
+    """The package's own directory, where the files it ships live.
+
+    Icons and address maps belong to the program and travel with it, so they
+    sit inside the package. PyInstaller keeps the package structure when it
+    unpacks, so this is the right answer frozen as well as from a checkout.
+    """
+    return Path(__file__).resolve().parent
+
+
 def bundle_dir() -> Path:
-    """The root of the source tree, or of a frozen build's unpacked files."""
+    """The project root, or a frozen build's unpacked files.
+
+    For the things that sit *beside* the package rather than in it: the
+    README, and the device folder. Distinct from package_dir() because in a
+    source tree they are one level apart, while a frozen build flattens the
+    two into the same unpacked directory.
+    """
     base = getattr(sys, "_MEIPASS", None)
-    return Path(base) if base else Path(__file__).resolve().parent
+    return Path(base) if base else package_dir().parent
 
 
 def asset_dir() -> Path:
-    """Where bundled assets live, in a source tree or inside a frozen build."""
-    return bundle_dir() / "icons"
+    """Where the icons live, in a source tree or inside a frozen build."""
+    return package_dir() / "icons"
 
 
 def help_icon(size: int = 18, colour: str = MUTED) -> QIcon:
@@ -2361,7 +2377,7 @@ class ChannelRow(QWidget):
 
         The icon needs no hedging about whether the device agrees, because
         the device is made to agree: mute is enforced rather than staged.
-        See default_fir's neighbour in minidsp_core for why.
+        See default_fir's neighbour in linidi.core for why.
         """
         self.mute.setChecked(muted)
         self.mute.setIcon(speaker_icon(16, muted=muted))
@@ -4587,7 +4603,7 @@ class MainWindow(QMainWindow):
 
         Mute reports whether a driver is making sound, so an icon showing
         it has to be true rather than pending -- see the policy note beside
-        default_fir in minidsp_core. Loading a project or importing a
+        default_fir in linidi.core. Loading a project or importing a
         preset therefore writes them straight away.
 
         This can start sound: a config that leaves a channel unmuted will
@@ -5226,7 +5242,7 @@ class MainWindow(QMainWindow):
 
         Mute takes effect on load rather than waiting for Apply, because it
         describes whether a driver is making sound rather than describing a
-        design -- see the policy beside default_fir in minidsp_core. That
+        design -- see the policy beside default_fir in linidi.core. That
         can start sound, so it is confirmed first, and cancelling leaves
         the project untouched because nothing has been replaced yet.
         """

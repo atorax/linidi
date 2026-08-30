@@ -42,15 +42,20 @@ if (Test-Path ".venv\Scripts\python.exe") {
 & $PY tools\check_deps.py
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
+# The package's own files keep their place inside it, because that is where
+# the code looks for them; the project's documents sit beside it. run.py is
+# the entry rather than linidi\__main__.py, which PyInstaller cannot use: it
+# runs the entry as a top-level script, leaving a package's relative imports
+# with no parent to resolve against.
 & $PY -m PyInstaller --onefile --name linidi --noconfirm --noconsole `
-    --icon "icons/LiniDi.ico" `
-    --add-data "address_maps;address_maps" `
-    --add-data "icons;icons" `
+    --icon "linidi/icons/LiniDi.ico" `
+    --add-data "linidi/address_maps;linidi/address_maps" `
+    --add-data "linidi/icons;linidi/icons" `
     --add-data "NOTICE;." `
     --add-data "LICENSE;." `
     --add-data "README.md;." `
     --add-data "MANUAL.md;." `
-    minidsp_gui.py
+    run.py
 if ($LASTEXITCODE -ne 0) { throw "build failed" }
 
 $exe = "dist\linidi.exe"

@@ -31,14 +31,21 @@ fi
 # tools/check_deps.py for why a missing module is worse than an error here.
 "$PY" tools/check_deps.py
 
+# The package's own files keep their place inside it, because that is where
+# the code looks for them; the project's documents sit beside it, which is
+# where the code looks for those. PyInstaller preserves both when it unpacks.
+#
+# run.py rather than linidi/__main__.py: PyInstaller executes its entry as a
+# top-level script, and a package's __main__ has relative imports that would
+# then have no parent package to resolve against.
 "$PYI" --onefile --name linidi --noconfirm \
-    --add-data "address_maps:address_maps" \
-    --add-data "icons:icons" \
+    --add-data "linidi/address_maps:linidi/address_maps" \
+    --add-data "linidi/icons:linidi/icons" \
     --add-data "NOTICE:." \
     --add-data "LICENSE:." \
     --add-data "README.md:." \
     --add-data "MANUAL.md:." \
-    minidsp_gui.py
+    run.py
 
 echo
 # --apparent-size, because on a delayed-allocation filesystem the blocks of a

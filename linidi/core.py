@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-minidsp_core -- device-facing logic for the miniDSP tuning GUI.
+linidi.core -- device-facing logic for the miniDSP tuning GUI.
 
 Deliberately free of any GUI toolkit so it can be driven from a desktop app,
 a script, or tests.
@@ -8,7 +8,7 @@ a script, or tests.
 Three jobs:
   1. Filter design      (RBJ biquads, crossover alignments) and its inverse
   2. Device I/O         (the minidspd fallback; the direct USB path lives in
-                         minidsp_protocol and minidsp_native)
+                         linidi.protocol and linidi.native)
   3. Project model      (local source of truth, snapshots, REW interchange)
 
 Biquad sign convention
@@ -43,6 +43,9 @@ from typing import Any, Iterable, Sequence
 
 import requests
 
+# The maps ship inside the package, so they are found the same way whether
+# this is a checkout or a frozen build: PyInstaller keeps the package
+# structure when it unpacks.
 HERE = Path(__file__).resolve().parent
 ADDRESS_MAPS = HERE / "address_maps"
 

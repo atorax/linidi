@@ -102,7 +102,7 @@ starting point rather than a supported platform.
 ## Running
 
 ```sh
-python3 minidsp_gui.py          # or ./dist/linidi
+python3 -m linidi               # or ./dist/linidi
 ```
 
 That is all. The app finds the device, identifies it, loads the matching
@@ -132,7 +132,7 @@ bind_address = "127.0.0.1:5333"
 EOF
 
 minidspd -c ~/.config/minidsp.toml &
-python3 minidsp_gui.py --daemon http://127.0.0.1:5380 --tcp 127.0.0.1:5333
+python3 -m linidi --daemon http://127.0.0.1:5380 --tcp 127.0.0.1:5333
 ```
 
 Note that Flex 8 support is not yet in upstream minidsp-rs; see
@@ -279,7 +279,7 @@ python3 tools/gen_address_map.py /path/to/minidsp-rs
 
 This produces a map for every device minidsp-rs supports, so the tool is not
 limited to the hardware it was written on. Pre-generated maps are in
-`address_maps/`.
+`linidi/address_maps/`.
 
 ### Notes for anyone building on this
 
@@ -445,5 +445,5 @@ NOTICE.
 Nothing else is bundled — no minidsp-rs binaries — so no other project's
 licence travels with the executable.
 
-Address maps in `address_maps/` are generated from
+Address maps in `linidi/address_maps/` are generated from
 [minidsp-rs](https://github.com/mrene/minidsp-rs) (Apache-2.0).

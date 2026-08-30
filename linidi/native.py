@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-minidsp_native -- the device layer, spoken directly over USB.
+linidi.native -- the device layer, spoken directly over USB.
 
 Presents the same surface the application already used when it went through
 minidspd, so the UI does not care which is underneath:
@@ -24,10 +24,10 @@ import struct
 import threading
 from typing import Any
 
-import minidsp_flash as mf
-import minidsp_protocol as mp
-from minidsp_protocol import MAX_FLOATS_PER_READ
-from minidsp_core import (COEFF_KEYS, MAX_DELAY_SAMPLES,
+from . import flash as mf
+from . import protocol as mp
+from .protocol import MAX_FLOATS_PER_READ
+from .core import (COEFF_KEYS, MAX_DELAY_SAMPLES,
                           XOVER_SLOTS, AddressMap, as_biquad,
                           delay_ms_from_raw,
                           describe_crossover_group,
@@ -116,7 +116,7 @@ def _ask_dangerous(title: str, detail: str) -> bool:
         raise mp.ProtocolError(
             f"{title}\n\n{detail}\n\nNothing here can ask whether that "
             f"is intended, so it was not written. A caller that means it "
-            f"can say so with minidsp_native.set_confirm_handler().")
+            f"can say so with linidi.native.set_confirm_handler().")
     return bool(_CONFIRM_DANGEROUS(title, detail))
 
 

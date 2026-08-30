@@ -64,7 +64,7 @@ already in use by another program"* or a permissions error.
 
 ```
 pip install -r requirements.txt
-python3 minidsp_gui.py
+python3 -m linidi
 ```
 
 ### A single file instead

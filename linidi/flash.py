@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-minidsp_flash -- the stored preset, read back out of the device's flash.
+linidi.flash -- the stored preset, read back out of the device's flash.
 
 Why this exists
 ---------------
@@ -93,8 +93,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
-import minidsp_core as mc
-import minidsp_protocol as mp
+from . import core as mc
+from . import protocol as mp
 
 # Block headers were observed only ever at 256-byte boundaries, on every slot
 # of every preset. Scanning at this stride is what makes locating them

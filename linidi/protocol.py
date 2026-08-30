@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-minidsp_protocol -- talk to miniDSP hardware directly over USB HID.
+linidi.protocol -- talk to miniDSP hardware directly over USB HID.
 
 No daemon, no external binaries. This is the transport layer that lets the
 application be a single self-contained program.

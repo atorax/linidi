@@ -27,7 +27,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-MAPS = Path(__file__).resolve().parent.parent / "address_maps"
+MAPS = Path(__file__).resolve().parent.parent / "linidi" / "address_maps"
 
 # Fields of one compressor, in the order Device Console names them.
 COMP_FIELDS = ("status", "threshold", "gain", "ratio", "knee", "atime",

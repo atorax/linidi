@@ -59,7 +59,8 @@ def main() -> int:
         except ImportError:
             missing.append((mod, pip_name, arch, debian, why))
         else:
-            note = "  (LGPL v3 -- record this version)" if mod == "PySide6" else ""
+            note = ("  (LGPL v3 -- record this version)"
+                    if mod == "PySide6" else "")
             print(f"{pip_name:12} {_version(m, pip_name)}{note}")
 
     if not missing:
