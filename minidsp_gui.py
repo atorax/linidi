@@ -318,16 +318,9 @@ QPushButton#tab:checked {{ color: {ACTIVE}; border-bottom-color: {ACTIVE};
 def default_project_path() -> Path:
     """Where the working project lives.
 
-    Under the program's own name, but the previous name is honoured if a
-    project is already there and the new location is empty. Renaming the
-    program should not hide someone's tuning behind a path they never chose
-    and would have no reason to look for.
+    Under the program's own name, alongside everything else it keeps.
     """
-    current = Path.home() / ".config" / "linidi" / "project.json"
-    previous = Path.home() / ".config" / "minidsp-gui" / "project.json"
-    if not current.exists() and previous.is_file():
-        return previous
-    return current
+    return Path.home() / ".config" / "linidi" / "project.json"
 
 
 def device_dir() -> Path:
