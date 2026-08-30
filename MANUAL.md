@@ -11,6 +11,32 @@ rather than measured, it is marked as such.
 
 ---
 
+## Warning
+
+**No warranty, express or implied. You use this entirely at your own risk.**
+Sections 7 and 8 of the LICENSE are the operative text; this is what they
+mean at your speakers.
+
+**This software can destroy loudspeakers.** In an active system the DSP is
+the only thing between an amplifier and a bare driver — nothing downstream
+catches a mistake. A high pass bypassed, a crossover on the wrong channel,
+or a gain on the wrong output can put full range or full power into a
+tweeter and end it in an instant. Amplifiers and hearing are at risk too.
+
+**It is confirmed working on one device only** — a Flex 8 (`hw_id 30`,
+`dsp_version 110`), on one machine. Other models are supported in code and
+untested against real hardware.
+
+**The authors and contributors accept no liability** for any damage to
+equipment, hearing or property arising from use or misuse of this software,
+whether or not it behaves as documented.
+
+Turn your amplifiers off before applying or saving. Read the device before
+writing to it. Bring the volume up slowly. See [Safety](#9-safety) for the
+specific failure this hardware punishes.
+
+---
+
 ## Contents
 
 1. [Introduction](#1-introduction)

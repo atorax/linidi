@@ -16,6 +16,42 @@ to run it.
 
 ---
 
+## Read this before you connect it to anything
+
+**This software comes with no warranty of any kind, express or implied, and
+you use it entirely at your own risk.** That is not a formality. Sections 7
+and 8 of the [LICENSE](LICENSE) are the operative version of this paragraph;
+what follows is what they mean in practice.
+
+**It can destroy loudspeakers.** A DSP in an active system is the only thing
+between an amplifier and a bare driver — there is no passive crossover
+downstream to catch a mistake. A wrong coefficient, a crossover written to
+the wrong channel, a high pass bypassed when it should not be, or a gain
+applied to the wrong output can put full-range signal or full power into a
+tweeter and finish it faster than you can reach the volume control. The same
+mistakes can damage amplifiers and hearing.
+
+**It is confirmed working on exactly one device.** A miniDSP Flex 8
+(`hw_id 30`, `dsp_version 110`), on one machine, tested by one person.
+Address maps for other models ship with it and are derived from published
+sources, but **no other model has ever been tested against real hardware**.
+If you point this at a different device you are the first person to do so,
+and you should expect to find out what is wrong with it yourself.
+
+**The authors and contributors accept no liability** for damage to
+equipment, hearing, property, or anything else arising from use or misuse of
+this software — whether it behaves as documented or not.
+
+If that is not acceptable to you, do not use it. If it is:
+
+- **Turn your amplifiers off** before you apply or save anything.
+- **Read the device first**, so the app knows what is actually loaded.
+- Bring the volume up slowly when you turn them back on.
+- Do not assume a filter is doing what you intended until you have measured
+  it.
+
+---
+
 **[MANUAL.md](MANUAL.md)** is the user manual — installation, signal flow,
 a reference for every processing block, and troubleshooting. This file is
 about how the thing works inside and why it is built the way it is.
