@@ -16,6 +16,10 @@ to run it.
 
 ---
 
+**[MANUAL.md](MANUAL.md)** is the user manual — installation, signal flow,
+a reference for every processing block, and troubleshooting. This file is
+about how the thing works inside and why it is built the way it is.
+
 ## Status
 
 Alpha. Reading from the device and designing filters are well tested; writing a

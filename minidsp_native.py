@@ -872,8 +872,10 @@ class NativeDevice:
                 f"{len(taps)} were offered. The device would take the first "
                 f"{capacity} and drop the rest, which is a different filter, "
                 f"so nothing was written.")
-        if not taps:
-            raise mp.ProtocolError("a FIR needs at least one tap")
+        if len(taps) < FIR_MIN_TAPS:
+            raise mp.ProtocolError(
+                f"a FIR block takes at least {FIR_MIN_TAPS} taps and "
+                f"{len(taps)} were offered")
 
         # Padded to the full block. Writing only the filter's own taps
         # leaves whatever was there beyond them: a 32-tap filter followed by
@@ -1038,7 +1040,17 @@ FIR_BYPASSED, FIR_ENABLED = 3, 2
 # against. Only used to decode a stored preset, where asking the device
 # would mean a round trip for a number that is already implied by the
 # block's size in the image.
+#
+# miniDSP's manual puts it as a pool: 4096 taps in total, distributed as
+# you like across the two inputs, each between 6 and 2048. Since the two
+# maxima add up to the total there is never anything to trade -- both
+# blocks can hold 2048 at once, which is what GetNumFirTaps reports for
+# each of them.
+#
+# The floor is why an unused block reads 6: that is the documented
+# minimum, not an arbitrary leftover.
 FIR_TAPS = 2048
+FIR_MIN_TAPS = 6
 
 # The order these are written in matters, so it is stated once. Everything
 # the compressor computes with goes down before it is switched on, and it is
