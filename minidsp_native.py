@@ -374,6 +374,18 @@ class NativeDevice:
         for i, spec in enumerate(self.amap.inputs):
             ch: dict[str, Any] = {"index": i}
             self._stored_common(ch, spec, p)
+            fir = spec.get("fir")
+            if fir and "coeffs" in fir:
+                # The taps are inside the image already, so this costs
+                # nothing beyond decoding them -- and it is the only way
+                # the panel can show what the device is actually holding
+                # rather than what this project last put there.
+                ch["fir"] = {
+                    "taps": p.floats(fir["coeffs"], FIR_TAPS),
+                    "enabled": p.i32(fir["enable"]) == FIR_ENABLED
+                    if "enable" in fir else False,
+                    "source": "device", "pending": False,
+                }
             routes = []
             gains = spec.get("routing", [])
             gates = spec.get("routing_status", [])
@@ -984,6 +996,12 @@ COMP_BYPASSED, COMP_ENABLED = 3, 2
 # value and is what made this look unreadable for as long as nothing had
 # been enabled.
 FIR_BYPASSED, FIR_ENABLED = 3, 2
+
+# How many coefficients a block holds on the hardware this was written
+# against. Only used to decode a stored preset, where asking the device
+# would mean a round trip for a number that is already implied by the
+# block's size in the image.
+FIR_TAPS = 2048
 
 # The order these are written in matters, so it is stated once. Everything
 # the compressor computes with goes down before it is switched on, and it is

@@ -1156,6 +1156,11 @@ def reset_peq_band(band: dict[str, Any], count: int = 10) -> None:
     """
     stock = default_peq_band(band.get("index", 0), count)
     band.update(stock)
+    # These values are nobody's but this app's now. Leaving read_state as it
+    # was left the provenance column saying "from device" for a band whose
+    # numbers had just been thrown away and replaced with stock ones.
+    band["read_state"] = "config"
+    band["bypass_source"] = "user"
     # Not "default": somebody chose this, and the difference matters to the
     # warning about filters whose state is unknown.
     band["bypass_source"] = "user"
@@ -1888,6 +1893,14 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
                 stats["routing"] += 1
             if readable and "gain" in found:
                 route["gain"] = found["gain"]
+        fir = src.get("fir")
+        if fir and fir.get("taps"):
+            # Already on the device, so not pending: this is what it holds,
+            # not something waiting to be sent to it.
+            inp["fir"] = {"taps": list(fir["taps"]),
+                          "enabled": bool(fir.get("enabled")),
+                          "source": "device", "pending": False}
+            stats["fir"] = stats.get("fir", 0) + 1
         _apply_stored_bands(inp["peq"], src.get("peq", []), stats)
 
     return stats
