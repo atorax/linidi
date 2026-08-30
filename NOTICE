@@ -39,6 +39,11 @@ PySide6 / Qt for Python
     their choosing. Bundled distributions should state the PySide6 version they
     were built with and include a copy of the LGPL v3 text.
 
+    The build in dist/ was made against PySide6 6.11.2 (Qt 6.11.2) on
+    Python 3.14, with pyusb 1.3.1. `./build.sh` prints these each time it
+    runs, so the figure to publish is whatever it reported for the build
+    being shipped rather than the one recorded here.
+
 Filter design
     Biquad coefficient formulas follow the "Cookbook formulae for audio
     equalizer biquad filter coefficients" by Robert Bristow-Johnson, which the
