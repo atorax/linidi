@@ -1503,6 +1503,11 @@ class CrossoverGroup(QGroupBox):
         head.addWidget(card_heading(f"Crossover {letter}"))
         head.addStretch(1)
         self.enabled = QCheckBox("Enabled")
+        self.enabled.setToolTip(
+            "Put this crossover into circuit on this output.\n"
+            "Switched off, the coefficients stay where they are and the "
+            "filter stops being applied.\nPartly filled means the device "
+            "was not asked -- it has no address that reports this.")
         self.enabled.setTristate(True)
         self.enabled.clicked.connect(self._enabled_clicked)
         self.enabled.toggled.connect(self._emit)
@@ -1512,10 +1517,20 @@ class CrossoverGroup(QGroupBox):
         lay.addWidget(holder, 0, 0, 1, 2)
 
         self.mode = QComboBox()
+        self.mode.setToolTip(
+            "High-pass keeps what is above the corner, low-pass what is "
+            "below.\nA driver usually wants one of each: a band-pass is "
+            "the two groups together.")
         self.mode.addItems(["highpass", "lowpass"])
         self.mode.currentTextChanged.connect(self._emit)
 
         self.alignment = QComboBox()
+        self.alignment.setToolTip(
+            "The shape of the slope. Linkwitz-Riley sums flat with its "
+            "partner at the corner,\nButterworth is flat on its own, and "
+            "Bessel keeps the phase honest at the cost of steepness.\n"
+            "\"custom\" means coefficients this app did not design and "
+            "cannot describe.")
         self.alignment.addItems(list(core.ALIGNMENTS) + ["custom"])
         self.alignment.currentTextChanged.connect(self._on_alignment)
 
@@ -2418,14 +2433,27 @@ class ChannelEditor(QWidget):
         bl.addWidget(card_heading("Channel"))
         bl.addSpacing(10)
         self.gain = QDoubleSpinBox()
+        self.gain.setToolTip(
+            "Level for this channel.\nThe device stores gains coarsely "
+            "and rounds down, so the app writes whatever value lands on "
+            "the number you asked for.")
         self.gain.setRange(-127.0, 12.0); self.gain.setDecimals(2)
         self.gain.setSingleStep(0.5); self.gain.setSuffix(" dB")
         self.gain.valueChanged.connect(self._emit)
         self.delay = QDoubleSpinBox()
+        self.delay.setToolTip(
+            "Delay on this output, for time-aligning drivers.\nStored as "
+            "a whole number of samples, so it moves in steps of about "
+            "0.0104 ms at 96 kHz.")
         self.delay.setRange(0.0, 80.0); self.delay.setDecimals(4)
         self.delay.setSingleStep(0.01); self.delay.setSuffix(" ms")
         self.delay.valueChanged.connect(self._emit)
-        self.invert = QPushButton("Invert"); self.invert.setCheckable(True)
+        self.invert = QPushButton("Invert")
+        self.invert.setToolTip(
+            "Flip this output's polarity.\nApplies whatever is feeding "
+            "it -- for one path only, use the routing card's \u00f8 "
+            "column.")
+        self.invert.setCheckable(True)
         self.invert.toggled.connect(self._emit)
 
         self.show_phase = QCheckBox("Phase")
@@ -3083,6 +3111,9 @@ class MasterStrip(QFrame):
         lab = QLabel("Volume"); lab.setObjectName("muted")
         lay.addWidget(lab)
         self.volume = QSlider(Qt.Horizontal)
+        self.volume.setToolTip(
+            "Master volume, applied after everything else.\nSent as you "
+            "move it -- this one is not staged for Apply.")
         self.volume.setRange(-1270, 0)          # tenths of a dB
         self.volume.setFixedWidth(220)
         self.volume.sliderReleased.connect(self._volume_committed)
@@ -3580,8 +3611,14 @@ class MainWindow(QMainWindow):
         self.rew_btn.clicked.connect(self.on_rew)
 
         self.save_btn = QPushButton("Save project")
+        self.save_btn.setToolTip(
+            "Write this configuration to a file.\nThe app's own format: "
+            "everything it models, including FIR taps.")
         self.save_btn.clicked.connect(self.on_save)
         self.load_btn = QPushButton("Load project")
+        self.load_btn.setToolTip(
+            "Open a configuration saved by this app.\nMute states take "
+            "effect immediately -- everything else waits for Apply.")
         self.load_btn.clicked.connect(self.on_load)
 
         # Import runs one way, into where you already are, so these say what
@@ -4248,6 +4285,20 @@ class MainWindow(QMainWindow):
             on_error=lambda e: self.statusBar().showMessage(e, 6000))
 
     def on_read(self):
+        """Ask the device what it is doing, and believe the answer.
+
+        Three sources, in order of authority. Live parameter memory for
+        everything that reads back -- gains, delay, polarity, gates,
+        crossover coefficients. The stored preset for the things that do
+        not: PEQ coefficients answer zero, mixer gates answer a constant,
+        bypass flags have no address at all, and the compressor's settings
+        and the FIR taps live only there. Nothing at all for a field
+        neither can give, which is left as the project had it and said so
+        in the provenance column.
+
+        Nothing here falls back to a settings file. A value on screen after
+        a read came off the hardware or it is marked as not having.
+        """
         if self.readback is None:
             return
         self.set_device_busy(True, "Reading the device")
@@ -4310,6 +4361,15 @@ class MainWindow(QMainWindow):
                        on_error=self._read_failed)
 
     def _read_done(self, result):
+        """Fold a finished read into the project and say what it found.
+
+        The stored preset is applied after the live readings rather than
+        before, and supplies only what a live read cannot: coefficients,
+        bypass flags, mixer gates. Where both can answer, the live one
+        wins -- it says what the device is doing now, where the stored one
+        says what it would do after a power cycle, and taking the stored
+        value would hide exactly the disagreement worth seeing.
+        """
         self.progress.hide()
         self.set_device_busy(False)
         readings, input_readings, stored, stored_error = result
@@ -5169,6 +5229,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Saved {path}", 5000)
 
     def on_load(self):
+        """Open a saved configuration, and enforce the part that is state.
+
+        Mute takes effect on load rather than waiting for Apply, because it
+        describes whether a driver is making sound rather than describing a
+        design -- see the policy beside default_fir in minidsp_core. That
+        can start sound, so it is confirmed first, and cancelling leaves
+        the project untouched because nothing has been replaced yet.
+        """
         path, _ = QFileDialog.getOpenFileName(
             self, "Load project", str(self._last_dir("project")),
             "JSON (*.json)")

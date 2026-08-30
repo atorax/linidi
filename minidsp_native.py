@@ -250,6 +250,18 @@ class NativeDevice:
         }
 
     def read_output(self, index: int) -> dict[str, Any]:
+        """One output, from live parameter memory only.
+
+        Gain, delay, polarity, the mute gate and the crossover blocks all
+        read back and are decoded here. The PEQ blocks are read too and
+        come back as five zeros apiece, which is what filter memory
+        answers -- they are decoded anyway so the caller sees a band of the
+        right shape, and stored_config supplies the real ones.
+
+        The compressor is deliberately absent. Only its threshold reads
+        back; the rest answer zero, and a zero that looks like a setting is
+        worse than no setting at all.
+        """
         spec = self.amap.outputs[index]
         out: dict[str, Any] = {"index": index}
         with self._lock:
@@ -279,6 +291,12 @@ class NativeDevice:
         return out
 
     def read_input(self, index: int) -> dict[str, Any]:
+        """One input, from live parameter memory only.
+
+        Gain, the mute gate, the PEQ blocks and each mixer cell's gain and
+        polarity. The cells' on/off gates are not here: see the note in the
+        body for why a readable-looking address is left unread.
+        """
         spec = self.amap.inputs[index]
         out: dict[str, Any] = {"index": index}
         with self._lock:
