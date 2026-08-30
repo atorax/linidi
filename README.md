@@ -398,6 +398,12 @@ correctly either way.
 
 ---
 
+## Trademarks
+
+miniDSP is a trademark of miniDSP Ltd. LiniDi is an independent project with
+no affiliation to, sponsorship from, or endorsement by miniDSP Ltd. The name
+appears throughout only to say which hardware this software talks to.
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

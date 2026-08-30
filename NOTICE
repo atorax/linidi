@@ -1,8 +1,22 @@
-minidsp-gui
+LiniDi
 Copyright 2026 John Balleman
 
-This product includes software developed as part of the minidsp-gui project,
+This product includes software developed as part of the LiniDi project,
 licensed under the Apache License, Version 2.0 (see LICENSE).
+
+================================================================================
+Trademarks
+================================================================================
+
+miniDSP is a trademark of miniDSP Ltd. LiniDi is an independent project with
+no affiliation to, sponsorship from, or endorsement by miniDSP Ltd. The name
+appears here only to say which hardware this software talks to, which is what
+it is for.
+
+The project was called minidsp-gui while it was one person's utility. It was
+renamed because a name built out of somebody else's is a poor thing to hand to
+other people, whatever the intent behind it -- and because a project named
+after the thing it plugs into cannot be found by anyone searching for it.
 
 ================================================================================
 Third-party components
@@ -13,7 +27,7 @@ minidsp-rs
     Copyright Mathieu Rene and contributors
     Licensed under the Apache License, Version 2.0
 
-    minidsp-gui communicates with `minidspd` (its HTTP API) and the `minidsp`
+    LiniDi communicates with `minidspd` (its HTTP API) and the `minidsp`
     CLI. Distributions that bundle those binaries redistribute minidsp-rs under
     the Apache License, Version 2.0; this NOTICE serves as the required
     attribution.
@@ -27,13 +41,13 @@ PySide6 / Qt for Python
     Copyright The Qt Company Ltd. and contributors
     Licensed under the GNU Lesser General Public License, version 3 (LGPL v3)
 
-    minidsp-gui uses PySide6 as a dynamically linked library and does not
+    LiniDi uses PySide6 as a dynamically linked library and does not
     modify it. LGPL v3 permits this without affecting the license of
-    minidsp-gui itself.
+    LiniDi itself.
 
     If you distribute a bundled binary (for example one built with PyInstaller
     `--onefile`), LGPL v3 section 4 requires that recipients be able to relink
-    or replace the covered library. The complete source of minidsp-gui is
+    or replace the covered library. The complete source of LiniDi is
     published under Apache-2.0, and PySide6 sources are available from the URL
     above, so a recipient can rebuild the application against a PySide6 of
     their choosing. Bundled distributions should state the PySide6 version they
