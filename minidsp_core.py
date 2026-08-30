@@ -539,7 +539,7 @@ def parse_fir_taps(data: bytes, name: str = "",
     than an assumption made here, because rePhase will also write 64-bit
     when asked and somebody eventually does.
     """
-    if b"\x00" in data[:4096]:
+    if _looks_binary(data):
         return _parse_fir_binary(data, name, width)
     try:
         text = data.decode("utf-8-sig")
@@ -580,6 +580,29 @@ def parse_fir_taps(data: bytes, name: str = "",
         raise ValueError(
             f"{name or 'that file'} holds no coefficients")
     return taps
+
+
+def _looks_binary(data: bytes) -> bool:
+    """Whether these bytes are raw floats rather than a list of numbers.
+
+    A NUL settles it, but relying on one is not enough: a file of
+    coefficients that all happen to encode without a zero byte contains
+    none. Three thousand copies of 0.1 as float32 is CD CC CC 3D repeated,
+    and that file was read as text and reported as holding no coefficients
+    -- which is true of the text in it, and useless.
+
+    So it counts bytes that cannot appear in a file of decimal numbers:
+    control characters and anything above plain ASCII. A text export is
+    entirely printable; raw floats are mostly not.
+    """
+    sample = data[:4096]
+    if not sample:
+        return False
+    if b"\x00" in sample:
+        return True
+    odd = sum(1 for b in sample
+              if b < 9 or 13 < b < 32 or b > 126)
+    return odd > len(sample) // 20
 
 
 # What miniDSP's own manuals specify for a coefficient file, across the
