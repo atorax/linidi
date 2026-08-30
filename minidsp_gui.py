@@ -490,24 +490,6 @@ def app_icon() -> QIcon:
     return icon
 
 
-def _faded_icon(icon: QIcon, size: int) -> QIcon:
-    """The same glyph, drawn provisionally.
-
-    Used where a state is being shown on the project's word rather than the
-    device's. There is no third speaker artwork and inventing one would
-    mean a symbol nobody recognises; the same glyph at part strength reads
-    as "this, not yet confirmed" without needing to be learnt.
-    """
-    src = icon.pixmap(size, size)
-    out = QPixmap(src.size())
-    out.fill(Qt.transparent)
-    p = QPainter(out)
-    p.setOpacity(0.35)
-    p.drawPixmap(0, 0, src)
-    p.end()
-    return QIcon(out)
-
-
 def speaker_icon(size: int = 22, muted: bool = False,
                  body: str = FG, slash: str = DANGER) -> QIcon:
     """The speaker glyph for the current state.
@@ -2343,20 +2325,21 @@ class ChannelRow(QWidget):
         re-selected a row and so reloaded the whole editor for a channel that
         had not changed.
 
-        `confirmed` is whether the device said so. Loading a project or
-        importing a preset fills these in from a file, and a file records
-        what was true when it was written -- so the icon would otherwise
-        draw a channel as quiet on no better evidence than that somebody
-        saved it that way once. It is faded until a read or a write makes
-        it true. Of everything on this row, mute is the one worth being
-        careful about: it is a claim about whether a driver is making
-        sound.
+        `confirmed` is whether the device said so, and it only changes the
+        tooltip. Loading a project or importing a preset fills mute in from
+        a file, and a file records what was true when it was written -- so
+        without it the icon draws a channel as quiet on no better evidence
+        than that somebody once saved it that way, which is a claim about
+        whether a driver is making sound.
+
+        Saying so on hover is the whole of it. Drawing it differently would
+        need a visual language for "believed but unverified", and this app
+        does not have one -- colour means what kind of thing something is,
+        fill means in circuit or not. Inventing a third axis for one icon
+        is how a UI ends up with rules only its author knows.
         """
         self.mute.setChecked(muted)
-        icon = speaker_icon(16, muted=muted)
-        if not confirmed:
-            icon = _faded_icon(icon, 16)
-        self.mute.setIcon(icon)
+        self.mute.setIcon(speaker_icon(16, muted=muted))
         self.mute.setToolTip(
             f"{'Unmute' if muted else 'Mute'} {self.channel_name}"
             + ("" if confirmed else
