@@ -111,7 +111,7 @@ def _install_crash_log() -> None:
     not around to read.
     """
     try:
-        path = Path.home() / ".config" / "linidi"
+        path = core.config_dir()
         path.mkdir(parents=True, exist_ok=True)
         # Kept on the module so the handle outlives this function; a closed
         # file would leave faulthandler writing to a dead descriptor.
@@ -320,7 +320,7 @@ def default_project_path() -> Path:
 
     Under the program's own name, alongside everything else it keeps.
     """
-    return Path.home() / ".config" / "linidi" / "project.json"
+    return core.config_dir() / "project.json"
 
 
 def device_dir() -> Path:

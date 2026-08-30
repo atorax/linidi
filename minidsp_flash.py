@@ -93,6 +93,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
+import minidsp_core as mc
 import minidsp_protocol as mp
 
 # Block headers were observed only ever at 256-byte boundaries, on every slot
@@ -508,7 +509,7 @@ CACHE_VERSION = 1
 
 def cache_path() -> Path:
     """Where located block addresses are kept between runs."""
-    return Path.home() / ".config" / "linidi" / "flash-blocks.json"
+    return mc.config_dir() / "flash-blocks.json"
 
 
 def device_key(info: "mp.DeviceInfo") -> str:

@@ -53,6 +53,7 @@ License: Apache-2.0
 from __future__ import annotations
 
 import struct
+import sys
 import time
 from dataclasses import dataclass
 from typing import Iterable, Sequence
@@ -270,7 +271,7 @@ class DeviceInfo:
 def discover() -> list[DeviceInfo]:
     """Every miniDSP HID interface currently attached."""
     if hid is None:
-        raise ProtocolError("python-hidapi is not installed")
+        raise ProtocolError("hidapi is not installed")
     seen = {}
     for d in hid.enumerate(VENDOR_ID, 0):
         # A device exposes several interfaces; the control one accepts our
@@ -379,11 +380,18 @@ class LibUsbTransport:
 
 
 class HidRawTransport:
-    """Raw HID through hidapi, when a hidraw node exists."""
+    """Raw HID through hidapi.
+
+    On Linux this reaches the device through a /dev/hidrawN node, and is the
+    fallback: see LibUsbTransport for why libusb is tried first there. On
+    Windows it goes through the operating system's own HID API and is the only
+    transport that can work at all, so the order is reversed -- see MiniDSP's
+    constructor.
+    """
 
     def __init__(self, path: bytes | None = None, timeout_ms: int = 2000):
         if hid is None:
-            raise ProtocolError("python-hidapi is not installed")
+            raise ProtocolError("hidapi is not installed")
         if path is None:
             found = discover()
             if not found:
@@ -417,17 +425,31 @@ class MiniDSP:
     def __init__(self, transport=None, product_id: int | None = None,
                  timeout_ms: int = 2000):
         if transport is None:
+            def _libusb():
+                return LibUsbTransport(product_id, timeout_ms)
+
+            def _hidapi():
+                return HidRawTransport(timeout_ms=timeout_ms)
+
+            # Which transport leads depends on who owns the HID interface.
+            # On Linux nothing need own it, and libusb wins for the reason in
+            # LibUsbTransport's docstring. On Windows the operating system's
+            # own HID driver always owns it, and libusb cannot claim it away
+            # without replacing that driver -- which would break the vendor's
+            # software too -- so hidapi leads and libusb becomes the fallback.
+            first, second = ((_hidapi, _libusb) if sys.platform == "win32"
+                             else (_libusb, _hidapi))
             try:
-                transport = LibUsbTransport(product_id, timeout_ms)
-            except ProtocolError as usb_exc:
-                # hidraw is a fallback for when libusb is unavailable, not an
-                # explanation for why libusb failed. If it cannot help either,
-                # report the original reason -- "already in use" is actionable,
-                # "no hidraw node" is not.
+                transport = first()
+            except ProtocolError as primary_exc:
+                # The second transport is for when the first is unavailable,
+                # not an explanation for why it failed. If it cannot help
+                # either, report the first reason -- "already in use" is
+                # actionable, "no hidraw node" is not.
                 try:
-                    transport = HidRawTransport(timeout_ms=timeout_ms)
+                    transport = second()
                 except ProtocolError:
-                    raise usb_exc from None
+                    raise primary_exc from None
         self._t = transport
         self.timeout_ms = timeout_ms
         self._unacked = 0

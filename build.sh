@@ -27,11 +27,9 @@ else
     exit 1
 fi
 
-"$PY" - <<'EOF'
-import PySide6, usb, requests
-print(f"PySide6 {PySide6.__version__}  (LGPL v3 -- record this version)")
-print(f"pyusb   {usb.__version__}")
-EOF
+# Names everything that is missing, rather than dying on the first one. See
+# tools/check_deps.py for why a missing module is worse than an error here.
+"$PY" tools/check_deps.py
 
 "$PYI" --onefile --name linidi --noconfirm \
     --add-data "address_maps:address_maps" \

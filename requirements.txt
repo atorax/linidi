@@ -2,6 +2,13 @@
 PySide6>=6.5          # Qt bindings, LGPL v3
 pyusb>=1.2            # direct USB transport -- the app's normal path
 
+# The other transport. The code imports it optionally, which is why it went
+# undeclared for so long: the fallback existed only on machines that happened
+# to have it already, and would vanish from a build made on a clean box. It is
+# also the *primary* transport on Windows, where the HID interface belongs to
+# the operating system's driver and libusb cannot claim it. Provides `hid`.
+hidapi>=0.14
+
 # Only needed for the minidspd/CLI fallback, when USB cannot be opened
 requests>=2.28
 

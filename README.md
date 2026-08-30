@@ -39,14 +39,15 @@ Nothing but Python and a udev rule. The app opens the device itself over USB.
 - Python 3.10+
 - [PySide6](https://doc.qt.io/qtforpython/) (Qt bindings, LGPL v3)
 - [pyusb](https://github.com/pyusb/pyusb) and libusb 1.0
+- [hidapi](https://github.com/trezor/cython-hidapi) — the second transport
 - A miniDSP device on USB
 
 ```sh
 # Arch / CachyOS
-sudo pacman -S python-pyside6 python-pyusb libusb
+sudo pacman -S python-pyside6 python-pyusb python-hidapi libusb
 
 # Debian / Ubuntu
-sudo apt install python3-pyside6.qtwidgets python3-usb libusb-1.0-0
+sudo apt install python3-pyside6.qtwidgets python3-usb python3-hidapi libusb-1.0-0
 ```
 
 `requests` is needed only for the optional minidspd fallback described under
@@ -72,6 +73,29 @@ affect playback.
 carries its own Python, Qt and libusb. It needs the udev rule above and a
 glibc no older than the machine it was built on; nothing else, and no
 minidsp-rs. See [License](#license) for what bundling Qt asks of you.
+
+Both build scripts check their dependencies first and name everything that is
+missing at once. This matters more than it sounds: PyInstaller bundles what it
+can import, so a package absent from the build machine is not an error — it is
+quietly absent from the finished executable, which then fails on someone
+else's machine for reasons that have nothing to do with their machine.
+
+### On Windows
+
+`build.ps1` does the same job there. PyInstaller cannot cross-compile, so a
+Windows executable has to be built on Windows.
+
+The platform differences are handled in the source rather than left to the
+reader. No udev rule is needed — Windows lets any user open a HID device. The
+two transports swap places: the HID interface belongs to the operating
+system's own driver, and libusb cannot claim it without replacing that driver
+(which would break miniDSP's own software too), so hidapi leads there and
+libusb becomes the fallback. Settings go under `%APPDATA%` instead of
+`~/.config`.
+
+**Nobody has run this.** The code paths are written and the build script is
+there, but no Windows machine has ever compiled or started it. Treat it as a
+starting point rather than a supported platform.
 
 ---
 

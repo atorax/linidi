@@ -31,9 +31,11 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 import re
 import struct
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +45,27 @@ import requests
 
 HERE = Path(__file__).resolve().parent
 ADDRESS_MAPS = HERE / "address_maps"
+
+
+def config_dir() -> Path:
+    """Where the program keeps its own files, by the platform's convention.
+
+    Everything the program writes for itself -- the working project, the flash
+    block map, the crash log -- lives here together, under the program's own
+    name. Stated once because it was previously spelled out at each of those
+    three call sites, which is how they drifted apart in the first place.
+
+    A dot-directory in the home folder is a Unix habit; Windows keeps per-user
+    application data under APPDATA. The Unix branch is written literally rather
+    than through XDG_CONFIG_HOME: ~/.config is what XDG resolves to when that
+    variable is unset, and honouring it would silently move the files of anyone
+    who had set it for other reasons.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA")
+        roaming = Path(base) if base else (Path.home() / "AppData" / "Roaming")
+        return roaming / "LiniDi"
+    return Path.home() / ".config" / "linidi"
 
 # The five coefficients, in the order they go on the wire and are written
 # everywhere else. Stated once so that dicts built in different places
