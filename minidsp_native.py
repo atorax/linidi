@@ -771,9 +771,16 @@ class NativeDevice:
         while these come back exactly as written. So a FIR is the one filter
         here that can be verified rather than trusted.
 
-        The two scalars beside them do not. `taps` reads 0 whatever it holds
-        and `enable` reads 1 whatever it is set to, so both come from the
-        stored preset, the same way the compressor's settings do.
+        `taps` does not: it reads 0 whatever it holds, so the tap count
+        comes from the stored preset the way the compressor's settings do.
+
+        `enable` does read back, which took a while to establish. It
+        answers 1 on a block that has never been switched on, and every
+        read of it here was in that state -- so it looked like another
+        write-only field reporting a constant. Once a block is actually
+        enabled it reads 2, the value it was set to. The same shape of
+        mistake as the compressor's makeup gain, which read 0 and was
+        called unreadable when the stored value was also 0.
         """
         spec = self.amap.inputs[index].get("fir")
         if not spec:
@@ -794,14 +801,16 @@ class NativeDevice:
         Theirs writes the status field first, carrying the value it means to
         end on, and only then the tap count and the taps. So enabling a
         filter walks the device through a window where the block is live and
-        its coefficients are half written. That is the same shape as their
-        compressor write, and here it is worse than a bad noise: switching a
-        FIR on against an incoherent tap count stopped this DSP answering
-        parameter reads or writes at all, and it took a preset change to get
-        it back.
+        its coefficients are half written -- the same shape as their
+        compressor write. Here the block is bypassed for the whole write and
+        switched on at the end, after the reload.
 
-        So the block is bypassed for the whole write and switched on at the
-        end, after the reload, if that is what was asked for.
+        Enabling a block that was loaded this way is uneventful; measured,
+        with the DSP answering throughout and the field reading back as 2.
+        The time this DSP stopped answering altogether, it had been asked to
+        run coefficients written straight to their addresses with
+        LoadDspParam and never reloaded -- a filter it had never been told
+        about. That is what the order below is really guarding against.
 
         Taps go by WriteFirTapsToFlash, never by a parameter write. The
         coefficient addresses accept one and read it back, which makes the
@@ -969,8 +978,11 @@ def _group_filters(group: dict[str, Any]) -> bool:
 # 3 nor 2 is discarded rather than guessed at.
 COMP_BYPASSED, COMP_ENABLED = 3, 2
 
-# A FIR block's on/off field, which uses the same encoding the compressor's
-# does and reads back the same way: 1, whatever it was set to.
+# A FIR block's on/off field. Same encoding as the compressor's, but
+# unlike that one it does read back -- 2 once a block has been enabled.
+# A block that has never been switched on answers 1, which is neither
+# value and is what made this look unreadable for as long as nothing had
+# been enabled.
 FIR_BYPASSED, FIR_ENABLED = 3, 2
 
 # The order these are written in matters, so it is stated once. Everything

@@ -1295,10 +1295,11 @@ class FirPanel(QGroupBox):
     correction and linear-phase EQ; it cannot make a linear-phase crossover,
     which needs a FIR per output and this hardware does not have one.
 
-    Loading is safe and switching on is not, which is why they look
-    different here. A filter is written with the block bypassed throughout
-    and reads back afterwards to prove it landed. Enabling one is the step
-    that stopped this DSP answering at all, so it asks first.
+    A filter is written with the block bypassed throughout and read back
+    afterwards to prove it landed -- coefficients are the one thing on this
+    hardware that can be verified rather than trusted. Enabling still asks
+    first, because it is the step that changes what comes out of the
+    speakers rather than because it is dangerous in itself.
     """
 
     changed = Signal()
@@ -1356,14 +1357,15 @@ class FirPanel(QGroupBox):
             box.setIcon(QMessageBox.Warning)
             box.setWindowTitle("Switch this FIR into circuit?")
             box.setText(
-                "Enabling a FIR block is the one operation here that has "
-                "stopped this DSP answering commands at all -- it took a "
-                "preset change and a mute cycle to bring it back.\n\n"
-                "That happened with a filter written the wrong way, and "
-                "this one was written the way Device Console writes them "
-                "and read back to check. It has still not been switched on "
-                "successfully even once.\n\n"
-                "Worth having the amplifiers down.")
+                "This puts the filter into circuit on this input, ahead of "
+                "the crossover, so it colours everything the input "
+                "feeds.\n\n"
+                "The filter was written the way Device Console writes one "
+                "and read back to check, which is what makes this safe: "
+                "the time this DSP stopped answering, it had been asked to "
+                "run coefficients poked straight into its memory that it "
+                "was never told to reload.\n\n"
+                "Worth a listen at low volume first.")
             go = box.addButton("Enable", QMessageBox.AcceptRole)
             box.addButton("Cancel", QMessageBox.RejectRole)
             box.setDefaultButton(box.buttons()[-1])

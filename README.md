@@ -214,6 +214,9 @@ What the hardware will and will not tell you shapes the whole design:
 | compressor threshold | yes | yes |
 | compressor makeup, ratio, attack, release | no | yes |
 | compressor knee | no | accepted and ignored |
+| FIR coefficients | **yes**, exactly | yes, via `0x3A` |
+| FIR tap count | no | yes |
+| whether a FIR is enabled | yes, once it has been | yes |
 | whether a compressor is bypassed | no | yes |
 | master volume, source, preset | yes | yes |
 | level meters | where the device has them | n/a |
@@ -340,7 +343,7 @@ On the minidspd fallback path only:
 - [x] Pure-Python USB transport, dropping the minidsp-rs dependency
 - [x] Single-file executable
 - [x] Compressor — eight of them, one per output
-- [ ] FIR — two blocks, 2048 taps each, on the inputs
+- [x] FIR — two blocks, 2048 taps each, on the inputs
 
 ### On bypass
 
