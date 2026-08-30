@@ -1160,7 +1160,8 @@ def default_compressor() -> dict[str, Any]:
 
 def default_output(index: int, n_peq: int) -> dict[str, Any]:
     return {"index": index, "name": f"Out {index + 1}", "gain": 0.0,
-            "mute": False, "invert": False, "delay": 0.0,
+            "mute": False, "mute_source": "default",
+            "invert": False, "delay": 0.0,
             "peq": [default_peq_band(i, n_peq) for i in range(n_peq)],
             "crossover": [default_crossover_group(0, "highpass"),
                           default_crossover_group(1, "lowpass")],
@@ -1201,7 +1202,7 @@ def default_input(index: int, n_out: int, n_peq: int) -> dict[str, Any]:
     thing you notice once.
     """
     return {"index": index, "name": f"In {index + 1}", "gain": 0.0,
-            "mute": False,
+            "mute": False, "mute_source": "default",
             "peq": [default_peq_band(i, n_peq) for i in range(n_peq)],
             "fir": default_fir(),
             "routing": [{"index": o, "enabled": False, "gain": 0.0}
@@ -1462,6 +1463,7 @@ def apply_readback(project: dict[str, Any],
         # addresses, so these are the device's own answer and not a guess.
         if "mute" in r:
             out["mute"] = r["mute"]
+            out["mute_source"] = "device"
         if "invert" in r:
             out["invert"] = r["invert"]
 
@@ -1500,6 +1502,7 @@ def apply_readback(project: dict[str, Any],
             inp["gain"] = r["gain"]
         if "mute" in r:
             inp["mute"] = r["mute"]
+            inp["mute_source"] = "device"
         # A mixer cell's gain reads back; its gate does not, and comes from
         # the stored preset instead. Only what was actually read is folded
         # in here.
@@ -1781,6 +1784,8 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
             for key in ("gain", "delay", "mute", "invert"):
                 if key in src:
                     out[key] = src[key]
+            if "mute" in src:
+                out["mute_source"] = "device"
 
         for group in src.get("crossover", []):
             gi = group["index"]
@@ -1834,6 +1839,8 @@ def apply_stored_preset(project: dict[str, Any], cfg: dict[str, Any],
             for key in ("gain", "mute"):
                 if key in src:
                     inp[key] = src[key]
+            if "mute" in src:
+                inp["mute_source"] = "device"
         # A cell's gate is one of the three things the hardware will not
         # report, so it always comes from here. Its gain does read back, so
         # that is left to the live pass unless there was not one.
@@ -1896,6 +1903,9 @@ def import_channel(dst: dict[str, Any], src: dict[str, Any],
         if key in src:
             dst[key] = copy.deepcopy(src[key])
             stats["fields"] += 1
+    # Carried over, not confirmed: nothing has been written yet, so the
+    # device is still doing whatever it was doing.
+    dst["mute_source"] = "project"
 
     for slot, band in enumerate(src.get("peq", [])):
         if slot >= len(dst.get("peq", [])):
@@ -1929,6 +1939,21 @@ def import_channel(dst: dict[str, Any], src: dict[str, Any],
     return stats
 
 
+def mute_unconfirmed(project: dict[str, Any]) -> None:
+    """Say that the mute states on screen have not been checked.
+
+    A project file records what was true when it was saved, which is not
+    the same as what is true now -- the device may have been used since, or
+    be a different unit entirely. Mute is the one field where believing a
+    stale answer is worse than admitting ignorance: a channel drawn as
+    quiet while it is passing signal is a claim about a driver, and this
+    app has made it.
+    """
+    for chans in (project.get("outputs", []), project.get("inputs", [])):
+        for ch in chans:
+            ch["mute_source"] = "project"
+
+
 def import_preset(project: dict[str, Any],
                   cfg: dict[str, Any]) -> dict[str, int]:
     """Fold a whole stored preset into a project, as an import.
@@ -1948,6 +1973,7 @@ def import_preset(project: dict[str, Any],
     # these are another preset's values, not this channel's current state.
     for chans in (project["outputs"], project["inputs"]):
         for ch in chans:
+            ch["mute_source"] = "project"
             for entry in ch.get("peq", []):
                 _mark_imported(entry)
             for entry in ch.get("crossover", []):
