@@ -596,6 +596,13 @@ def _looks_binary(data: bytes) -> bool:
     entirely printable; raw floats are mostly not.
     """
     sample = data[:4096]
+    # A byte-order mark is three bytes above ASCII, which in a short text
+    # file is a fifth of the sample and enough to call it binary on its
+    # own. It is the one high-byte sequence that means "this is text", and
+    # it turns up more than once in files that have been concatenated or
+    # saved twice -- so all of them go, not just a leading one, matching
+    # what the text path does with them further down.
+    sample = sample.replace(b"\xef\xbb\xbf", b"")
     if not sample:
         return False
     if b"\x00" in sample:
