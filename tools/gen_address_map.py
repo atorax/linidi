@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""
+Generate JSON address maps from minidsp-rs device definitions.
+
+minidsp-rs describes each supported device in `protocol/src/device/<name>.rs`,
+a generated file containing a `sym` module of symbol->address constants plus a
+`DEVICE` static laying out which symbol drives each input/output parameter.
+Nothing in the REST API exposes those addresses, and reading or writing a
+filter needs them, so we parse them out of the source.
+
+Usage:
+    python3 gen_address_map.py /path/to/minidsp-rs [device ...]
+
+With no device names, every device file found is converted. Output lands in
+`linidi/address_maps/<device>.json`, inside the package that loads them.
+
+Why parse rather than hardcode: it works for every device minidsp-rs supports,
+and it stays correct when upstream regenerates a profile.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+# Fields the minidsp-rs profiles do not describe, which
+# tools/extend_map_from_export.py adds from a Device Console export. Carried
+# across when a map is regenerated: without this, regenerating flex8.json
+# silently deleted eight compressors, both FIR blocks and sixteen mixer
+# polarity cells, which are the addresses this app depends on.
+KEEP_FROM_EXISTING = ("compressor", "fir", "routing_polarity")
+
+SYM_RE = re.compile(r"pub const (\w+): u16 = (\d+);")
+
+# Each `Output { ... }` / `Input { ... }` block, non-greedy up to the closing
+# brace that sits at the same indentation the block opened at.
+BLOCK_RE = re.compile(
+    r"\n(?P<indent>\s*)(?P<kind>Output|Input)\s*\{"
+    r"(?P<body>.*?)\n(?P=indent)\}",
+    re.DOTALL,
+)
+
+FIELD_PATTERNS = {
+    "gain": re.compile(r"gain:\s*Some\((\w+)\)"),
+    "enable": re.compile(r"enable:\s*(\w+)"),
+    "meter": re.compile(r"meter:\s*Some\((\w+)\)"),
+    "delay": re.compile(r"delay_addr:\s*Some\((\w+)\)"),
+    "invert": re.compile(r"invert_addr:\s*(\w+)"),
+}
+
+PEQ_RE = re.compile(r"peq:\s*&\[(.*?)\]", re.DOTALL)
+XOVER_RE = re.compile(r"xover:\s*Some\(Crossover\s*\{\s*peqs:\s*&\[(.*?)\]",
+                      re.DOTALL)
+ROUTING_RE = re.compile(r"routing:\s*&\[(.*?)\n\s*\],", re.DOTALL)
+SYMBOL_LIST_RE = re.compile(r"\b([A-Z][A-Z0-9_]*)\b")
+
+
+def parse_symbols(src: str) -> dict[str, int]:
+    return {m.group(1): int(m.group(2)) for m in SYM_RE.finditer(src)}
+
+
+def resolve(names: list[str], syms: dict[str, int]) -> list[int]:
+    out = []
+    for n in names:
+        if n in syms:
+            out.append(syms[n])
+    return out
+
+
+def parse_device(src: str, syms: dict[str, int]) -> dict:
+    """Extract per-channel address layout from the DEVICE static."""
+    inputs, outputs = [], []
+
+    for m in BLOCK_RE.finditer(src):
+        body = m.group("body")
+        kind = m.group("kind")
+        entry: dict = {}
+
+        # Searched with the routing array removed. A mixer cell is a Gate
+        # with its own `enable` and `gain: Some(...)`, so on a device whose
+        # Input block declares neither of its own, these patterns found the
+        # first cell's and recorded them as the channel's gain and mute.
+        # That put two meanings on one address: writing an input gain moved
+        # mixer cell 0 as well, and reading one back returned the cell.
+        # Four of the shipped maps were generated that way.
+        own = ROUTING_RE.sub("", body)
+        for field, pat in FIELD_PATTERNS.items():
+            fm = pat.search(own)
+            if fm and fm.group(1) in syms:
+                entry[field] = syms[fm.group(1)]
+
+        pm = PEQ_RE.search(body)
+        if pm:
+            names = SYMBOL_LIST_RE.findall(pm.group(1))
+            entry["peq"] = resolve(names, syms)
+
+        xm = XOVER_RE.search(body)
+        if xm:
+            names = SYMBOL_LIST_RE.findall(xm.group(1))
+            entry["xover_groups"] = resolve(names, syms)
+
+        if kind == "Input":
+            rm = ROUTING_RE.search(body)
+            if rm:
+                names = SYMBOL_LIST_RE.findall(rm.group(1))
+                # A routing cell is a Gate: an enable symbol and a gain
+                # symbol. Both are kept. Discarding the enables meant the app
+                # had to re-derive them as in_index * outputs + out_index,
+                # which is true of the Flex family and false elsewhere -- on a
+                # 2x4HD those addresses are channel mute gates, so a routing
+                # change would have muted channels instead.
+                entry["routing"] = resolve(
+                    [n for n in names if not n.endswith("_STATUS")], syms)
+                entry["routing_status"] = resolve(
+                    [n for n in names if n.endswith("_STATUS")], syms)
+            inputs.append(entry)
+        else:
+            outputs.append(entry)
+
+    return {"inputs": inputs, "outputs": outputs}
+
+
+def find_rate(src: str) -> int:
+    m = re.search(r"internal_sampling_rate:\s*Some\((\d+)\)", src)
+    return int(m.group(1)) if m else 96000
+
+
+def carry_over(target: Path, doc: dict) -> int:
+    """Move fields an export added into a freshly generated map.
+
+    minidsp-rs profiles do not describe compressors, FIR blocks or mixer
+    polarity; tools/extend_map_from_export.py adds those from a Device
+    Console export. Regenerating used to overwrite the file outright, so a
+    single run over flex8.json deleted eight compressors, both FIR blocks and
+    sixteen polarity cells -- addresses this app reads and writes.
+    """
+    if not target.is_file():
+        return 0
+    try:
+        old = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    kept = 0
+    for key in ("inputs", "outputs"):
+        for was, now in zip(old.get(key, []), doc.get(key, [])):
+            for field in KEEP_FROM_EXISTING:
+                if field in was and field not in now:
+                    now[field] = was[field]
+                    kept += 1
+    return kept
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print(__doc__)
+        return 1
+
+    repo = Path(argv[1])
+    devdir = repo / "protocol" / "src" / "device"
+    if not devdir.is_dir():
+        print(f"error: {devdir} not found -- is that a minidsp-rs checkout?")
+        return 1
+
+    wanted = set(argv[2:])
+    outdir = Path(__file__).resolve().parent.parent / "linidi" / "address_maps"
+    outdir.mkdir(exist_ok=True)
+
+    skip = {"mod.rs", "probe.rs"}
+    count = 0
+    for path in sorted(devdir.glob("*.rs")):
+        if path.name in skip:
+            continue
+        name = path.stem
+        if wanted and name not in wanted:
+            continue
+
+        src = path.read_text(encoding="utf-8")
+        syms = parse_symbols(src)
+        if not syms:
+            print(f"  {name}: no symbols found, skipping")
+            continue
+
+        layout = parse_device(src, syms)
+        n_in = len(layout["inputs"])
+        n_out = len(layout["outputs"])
+        if not n_out:
+            print(f"  {name}: no outputs parsed, skipping")
+            continue
+
+        doc = {
+            "device": name,
+            "internal_sampling_rate": find_rate(src),
+            "generated_from": f"minidsp-rs protocol/src/device/{path.name}",
+            "note": (
+                "Addresses are float indices, and a filter address is the "
+                "base of a 5-float biquad block: the device aligns reads down "
+                "to one, so an unaligned address returns the block "
+                "containing it. peq lists run band 0 first, which is the "
+                "*highest* address: the bands descend by 5. routing and "
+                "routing_status are "
+                "per input, one entry per destination output: the gain "
+                "address and the on/off gate address for that cell. The "
+                "minidsp CLI parses address arguments as HEX, so convert "
+                "before shelling out to `minidsp debug dump-float`."
+            ),
+            **layout,
+        }
+        target = outdir / f"{name}.json"
+        kept = carry_over(target, doc)
+        target.write_text(json.dumps(doc, indent=2) + "\n",
+                          encoding="utf-8")
+        if kept:
+            print(f"  {name}: kept {kept} field(s) the profile does not "
+                  f"describe")
+        peq_n = len(layout["outputs"][0].get("peq", []))
+        print(f"  {name}: {n_in} in / {n_out} out, {peq_n} PEQ "
+              f"-> {target.name}")
+        count += 1
+
+    print(f"\n{count} device map(s) written to {outdir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

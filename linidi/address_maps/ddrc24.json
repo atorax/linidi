@@ -1,0 +1,134 @@
+{
+  "device": "ddrc24",
+  "internal_sampling_rate": 96000,
+  "generated_from": "minidsp-rs protocol/src/device/ddrc24.rs",
+  "note": "Addresses are float indices, and a filter address is the base of a 5-float biquad block: the device aligns reads down to one, so an unaligned address returns the block containing it. peq lists run band 0 first, which is the *highest* address: the bands descend by 5. routing and routing_status are per input, one entry per destination output: the gain address and the on/off gate address for that cell. The minidsp CLI parses address arguments as HEX, so convert before shelling out to `minidsp debug dump-float`. This device's profile declares no channel gain or mute of its own for its inputs; earlier builds of the generator recorded the first mixer cell's addresses as if it did, which put two meanings on one address.",
+  "inputs": [
+    {
+      "meter": 16,
+      "peq": [],
+      "routing": [
+        8,
+        9,
+        10,
+        11
+      ],
+      "routing_status": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "meter": 17,
+      "peq": [],
+      "routing": [
+        12,
+        13,
+        14,
+        15
+      ],
+      "routing_status": [
+        4,
+        5,
+        6,
+        7
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "gain": 34,
+      "enable": 32,
+      "meter": 28,
+      "delay": 41,
+      "invert": 45,
+      "peq": [
+        91,
+        86,
+        81,
+        76,
+        71,
+        66,
+        61,
+        56,
+        51,
+        46
+      ],
+      "xover_groups": [
+        96,
+        116
+      ]
+    },
+    {
+      "gain": 138,
+      "enable": 136,
+      "meter": 29,
+      "delay": 145,
+      "invert": 149,
+      "peq": [
+        195,
+        190,
+        185,
+        180,
+        175,
+        170,
+        165,
+        160,
+        155,
+        150
+      ],
+      "xover_groups": [
+        200,
+        220
+      ]
+    },
+    {
+      "gain": 242,
+      "enable": 240,
+      "meter": 30,
+      "delay": 249,
+      "invert": 253,
+      "peq": [
+        299,
+        294,
+        289,
+        284,
+        279,
+        274,
+        269,
+        264,
+        259,
+        254
+      ],
+      "xover_groups": [
+        304,
+        324
+      ]
+    },
+    {
+      "gain": 346,
+      "enable": 344,
+      "meter": 31,
+      "delay": 353,
+      "invert": 357,
+      "peq": [
+        403,
+        398,
+        393,
+        388,
+        383,
+        378,
+        373,
+        368,
+        363,
+        358
+      ],
+      "xover_groups": [
+        408,
+        428
+      ]
+    }
+  ]
+}
